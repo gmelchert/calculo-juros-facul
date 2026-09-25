@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { calculaParcela } from '../lib/calculaParcela.js';
+import { listarFaixas } from '../repositorios/faixasJuros.js';
+import { faixas_score } from '../dados/score.js';
 
 const router = Router();
 
@@ -47,6 +49,15 @@ router.post('/composto', (req, res) => {
 		montante: Number(montante.toFixed(2)),
 		parcelas: calculaParcela(montante, periodos),
 	});
+});
+
+router.get('/faixas', async (req, res) => {
+	const { modalidadeCodigo, score } = req.query;
+
+	const faixa = faixas_score(score);
+
+	const faixasJuros = await listarFaixas(modalidadeCodigo, faixa);
+	res.json(faixasJuros);
 });
 
 export default router;

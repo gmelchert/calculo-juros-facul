@@ -8,6 +8,7 @@
     "start": "node --env-file=.env index.js",
     "dev": "node --watch --env-file=.env index.js",
     "test": "node --test",
+    "schema": "node --env-file=.env db/schema.js",
     "seed": "node --env-file=.env db/seed.js"
   },
   "engines": {
