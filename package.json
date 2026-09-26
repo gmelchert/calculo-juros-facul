@@ -8,6 +8,7 @@
     "start": "node --env-file=.env index.js",
     "dev": "node --watch --env-file=.env index.js",
     "test": "node --test",
+    "verifica": "node --env-file=.env scripts/verifica-endpoints.mjs",
     "schema": "node --env-file=.env db/schema.js",
     "seed": "node --env-file=.env db/seed.js"
   },
@@ -17,6 +18,7 @@
   "license": "MIT",
   "dependencies": {
     "express": "^5.2.1",
-    "mysql2": "^3.24.4"
+    "mysql2": "^3.24.4",
+    "swagger-ui-express": "^5.0.1"
   }
 }

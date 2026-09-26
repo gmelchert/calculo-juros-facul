@@ -25,3 +25,11 @@
  - a string é o caminho que usaremos para acessar o endpoint
  - Agora teste, utilize a URL: http://localhost:3000/api/ "string do router.use()" / "endpoint que você criou"
    o método da requisição precisa ser o mesmo que você criou o endpoint
+
+4. Como documentar o endpoint (Swagger)?
+ - A documentação interativa fica em http://localhost:3000/api/docs (com a API rodando).
+ - Ela é gerada a partir do arquivo src/openapi.js. Todo endpoint novo (ou campo novo em um
+   endpoint existente) precisa ser descrito lá, no mesmo PR: caminho em "paths", objetos em
+   "components.schemas". Copie um endpoint parecido e adapte.
+ - Rode "npm test" (confere que toda $ref existe) e "npm run verifica" (confere que a página sobe
+   e que todos os endpoints estão listados) antes de abrir o PR.

@@ -6,6 +6,15 @@
 > repositório em **24/09/2026**. Sempre que uma informação não pôde ser confirmada olhando o
 > código real, este documento diz isso explicitamente — nada aqui foi inventado.
 
+> **Atualização de 25/09/2026.** As 8 tarefas de `docs/backlog-api.md` (T-01 a T-08) estão
+> implementadas: funções puras de cálculo (`src/lib/`), serviços (`src/servicos/`) e os endpoints
+> `GET /api/modalidades`, `POST /api/operacoes`, `GET /api/operacoes` e `GET /api/operacoes/:id`.
+> Na mesma data o **banco passou a ser a fonte única** do catálogo de modalidades e das taxas por
+> faixa: a API lê as tabelas `modalidades` e `faixas_juros` pelos repositórios da §8 (os
+> arquivos estáticos `src/dados/modalidades.js` e `faixasRisco.js` foram removidos). As passagens
+> abaixo que dizem "ainda não implementado" ou "uso futuro" descrevem o estado de 24/09 e
+> continuam válidas como registro da fase de banco; o estado atual está resumido na §15.
+
 ---
 
 ## 1. Visão geral
@@ -313,7 +322,7 @@ rotas e serviços não devem montar SQL nem saber que colunas existem — só ch
 
 | Função | Parâmetros | Retorno | Consulta usada |
 |---|---|---|---|
-| `listarFaixas(modalidadeCodigo)` | `modalidadeCodigo: string` | as 5 faixas da modalidade, da melhor (A) para a pior (E) | Q3 |
+| `listarFaixas(modalidadeCodigo?, faixa?)` | `modalidadeCodigo: string` (opcional); `faixa: 'A'..'E'` (opcional, só filtra junto com a modalidade) | as 5 faixas da modalidade, da melhor (A) para a pior (E); sem parâmetros, as 30 de todas as modalidades. Cada item traz também `modalidadeCodigo` | Q3 |
 | `buscarFaixaPorScore(modalidadeCodigo, score)` | `modalidadeCodigo: string`, `score: number` | a faixa que cobre aquele score, ou `undefined` se a modalidade não existir ou o score estiver fora de 0–1000 | Q4 |
 
 Cada faixa devolvida inclui `permiteContratacao: boolean` (`true` exceto na faixa `E`, calculado
@@ -542,29 +551,33 @@ Cliente → GET /api/health → src/routes/index.js → src/routes/health.js
 Testado nos dois cenários: com o MySQL rodando (`200`, `banco: "ok"`) e com o MySQL parado
 (`503`, `banco: "erro"`), e novamente `200` após reiniciar o MySQL.
 
-## 15. Endpoints planejados, ainda não implementados
+## 15. Endpoints da API de simulação (implementados em 25/09/2026)
 
-Esta seção documenta o que **está especificado em `docs/backlog-api.md` mas não existe no
-código hoje** — para não confundir planejamento com implementação. Nenhum destes endpoints
-responde na API atual:
+Em 24/09/2026 esta seção listava os endpoints como "planejados, ainda não implementados". Desde
+25/09/2026 todos respondem na API; o contrato completo (campos, erros, valores de referência)
+continua em `docs/backlog-api.md`.
 
-| Endpoint planejado | Tarefa | O que faria |
-|---|---|---|
-| `GET /api/modalidades` | T-01 | Listaria as 6 modalidades de crédito (hoje só existem como dados no banco, acessíveis via `listarModalidades()`) |
-| `GET /api/modalidades/:codigo` | T-01 | Uma modalidade específica |
-| `POST /api/operacoes` | T-07 | Receberia um pedido de crédito, calcularia a simulação completa (Price, SAC, IOF, CET) e gravaria via `operacoes.salvar()` |
-| `GET /api/operacoes` | T-08 | Listagem paginada, usando `operacoes.listar()` |
-| `GET /api/operacoes/:id` | T-08 | Uma operação específica, usando `operacoes.buscarPorId()` |
+| Endpoint | Tarefa | O que faz | Camadas envolvidas |
+|---|---|---|---|
+| `GET /api/modalidades` | T-01 | Lista as modalidades **ativas** da tabela `modalidades` via `listarModalidades()` | rota → repositório |
+| `GET /api/modalidades/:codigo` | T-01 | Uma modalidade via `buscarModalidade()` mais as 5 `faixas` via `listarFaixas()`; `404 MODALIDADE_NAO_ENCONTRADA` | rota → repositório |
+| `POST /api/operacoes` | T-07 | Valida conferindo a modalidade no banco (`src/servicos/validaEntrada.js`), lê a taxa da faixa do score em `faixas_juros` (`src/servicos/taxa.js`), simula Price e SAC com cronograma, IOF, CET e demonstrativo (`src/servicos/simulacao.js`, função pura) e grava via `operacoes.salvar()`; devolve `201` com a operação relida por `buscarPorId()` | rota → serviços → lib → repositórios |
+| `GET /api/operacoes?pagina=&tamanho=` | T-08 | Listagem paginada (resumo, sem cronograma) via `operacoes.listar()`; `400` se `pagina < 1` ou `tamanho` fora de 1..100 | rota → repositório |
+| `GET /api/operacoes/:id` | T-08 | Operação completa via `operacoes.buscarPorId()`; `404 OPERACAO_NAO_ENCONTRADA`, `400` se `:id` não é inteiro ≥ 1 | rota → repositório |
+| `GET /api/docs` e `GET /api/docs.json` | — | Swagger UI e a especificação OpenAPI 3 crua. O contrato é escrito à mão em `src/openapi.js` (`swagger-ui-express` só serve a página); o exemplo da operação é calculado por `simulaOperacao`, por isso nunca diverge do cálculo real | rota |
 
-O banco de dados e a camada de repositórios (`src/repositorios/`) já foram construídos **prontos
-para sustentar esses endpoints** quando forem implementados — essa foi justamente a entrega desta
-fase do projeto (Fase 2, "Construção do Banco de Dados e das Consultas").
+Também existem, no código: as funções puras de cálculo (`src/lib/price.js`, `sac.js`, `datas.js`,
+`cronograma.js`, `encargos.js`, `cet.js`, `demonstrativo.js`, cada uma com `*.test.js`), a
+classe `ErroDeNegocio` (`src/lib/erros.js`) e o tratador de erros central em `src/app.js` (que
+também converte corpo JSON malformado em `400 DADOS_INVALIDOS`).
 
-Também não existem ainda, no código: as funções puras de cálculo Price/SAC/cronograma/IOF/CET
-(`src/lib/price.js`, `sac.js`, `datas.js`, `cronograma.js`, `encargos.js`, `cet.js`,
-`demonstrativo.js`), o catálogo `src/dados/modalidades.js`, a classe `ErroDeNegocio`
-(`src/lib/erros.js`) e o tratador de erros central em `src/app.js`. Todos estão detalhados,
-tarefa por tarefa, em `docs/backlog-api.md`.
+**Fonte única de dados.** Desde 25/09/2026 a API não tem mais catálogo estático: modalidades,
+prazos, tetos e taxas por faixa vêm das tabelas `modalidades` e `faixas_juros`, lidas pelos
+repositórios da §8. A regra `min(taxaBase + spread, teto)` é aplicada no seed, e a API só escolhe
+a linha da faixa (`taxa_mes` `NULL` = faixa E = `422 SCORE_INSUFICIENTE`). Em `src/dados/` resta
+apenas `parametros.js` (IOF e tarifa, que não têm tabela) e `score.js` (usado só pela rota legada
+`/api/juros`). Os serviços aceitam um repositório como último parâmetro, o que permite aos testes
+usar `src/servicos/bancoFalso.js` (cópia do seed) e rodar `npm test` sem MySQL.
 
 ## 16. Segurança
 

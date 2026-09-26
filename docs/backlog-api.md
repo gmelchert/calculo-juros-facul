@@ -8,6 +8,22 @@
 > guia: o que é, por que existe, o que você precisa entender antes, passo a passo, como testar
 > e como saber que terminou. Leia a tarefa inteira antes de começar a codar.
 
+> **Atualização de 25/09/2026 — as 8 tarefas estão implementadas e o banco virou a fonte única.**
+> Depois da entrega, a equipe decidiu que o catálogo de modalidades e as taxas por faixa de score
+> passam a ser lidos do **banco** (tabelas `modalidades` e `faixas_juros`), e não mais dos arquivos
+> estáticos `src/dados/modalidades.js` e `src/dados/faixasRisco.js`, que foram **removidos**. Os
+> trechos da T-01 e da T-07 (Parte B) que mostram esses arquivos continuam como registro de como a
+> regra foi pensada; o código atual está em `src/routes/modalidades.js`, `src/servicos/taxa.js`,
+> `src/servicos/validaEntrada.js` e nos repositórios. Detalhes na linha "Fonte do catálogo e das
+> taxas" da tabela de decisões, logo abaixo. Para conferir todos os endpoints contra o seu banco
+> local de uma vez (complemento ao Postman): `npm run verifica`.
+>
+> **Documentação interativa (Swagger).** Com a API no ar, abra <http://localhost:3000/api/docs>:
+> lista todos os endpoints, com exemplos, e permite chamá-los pelo navegador ("Try it out"). A
+> especificação OpenAPI crua está em <http://localhost:3000/api/docs.json> (dá para importar no
+> Postman: *Import → Link*). O contrato mora em `src/openapi.js`: **toda tarefa que cria ou muda um
+> endpoint atualiza esse arquivo no mesmo PR.**
+
 ---
 
 ## 1. Visão geral
@@ -65,6 +81,7 @@ Não reabra estas decisões durante a implementação — se discordar, levante 
 |---|---|
 | Stack | Node.js **20 LTS ou mais novo** (recomendado 22), Express 5 (já no repo), **MySQL 8** acessado com a biblioteca `mysql2`. Sem ORM, sem ferramenta de migrations: `db/schema.sql` (estrutura, 3 tabelas) e `db/seed.sql` (carga inicial), rodados com `npm run schema` e `npm run seed`. Ambos são mantidos pela **equipe de banco** (`docs/backlog-db.md`). |
 | Modalidades | **6 modalidades PF com parcelas** (lista na T-01). Cheque especial e cartão rotativo ficam **fora** — o CET deles segue outro caminho (art. 6º da Res. 4.881) e não tem cronograma de parcelas. |
+| Fonte do catálogo e das taxas | **Desde 25/09/2026:** o catálogo de modalidades e a taxa de cada faixa de score vêm do **banco** (tabelas `modalidades` e `faixas_juros`), lidos **só** pelos repositórios de `src/repositorios/`. A regra `taxaFinal = min(taxaBase + spread, teto)` continua valendo, mas é aplicada no **seed** (`db/seed.sql`, equipe de banco): a API apenas escolhe a linha da faixa do score e usa `taxa_mes`. Para mudar uma taxa ou um prazo: mude o seed e rode `npm run seed` — nenhum código muda. Consequências: `GET /api/modalidades/:codigo` devolve também as 5 `faixas`; o objeto `taxa` da resposta do `POST` traz `taxaBaseMes` (a da faixa A), `taxaFinalMes`, `taxaFinalAno`, `tetoTaxaMes`, `tetoAplicado` e `descricaoFaixa` (não há mais `spreadMes`, porque o banco não guarda o spread). Os testes dos serviços usam `src/servicos/bancoFalso.js` (cópia do seed) para rodar sem MySQL. |
 | Convenção de taxa | Taxa **efetiva mensal, capitalização composta** (mesma convenção da série do BCB, ver `docs/research_tabela-juros-brasil_20260831.md` §2.5). |
 | Unidade da taxa | **Fora** de `src/lib/` (catálogo, entrada e saída da API) a taxa é em **porcentagem** (`1.85` = 1,85% a.m.). **Dentro** de `src/lib/` a taxa é sempre **decimal** (`0.0185`). A conversão (`/ 100`) acontece em um único lugar: o serviço da T-07. |
 | Encargos | IOF e tarifa de cadastro são **pagos antecipadamente**: descontados do valor que o cliente recebe. Não são financiados junto com o principal. |

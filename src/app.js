@@ -20,6 +20,13 @@ app.use((err, req, res, next) => {
       erro: { codigo: err.codigo, mensagem: err.message, detalhes: err.detalhes },
     });
   }
+  // Corpo que não é JSON válido (ex.: vírgula sobrando): o express.json() lança este erro
+  // antes de a rota rodar. É culpa do cliente, então responde 400 no formato padrão.
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({
+      erro: { codigo: 'DADOS_INVALIDOS', mensagem: 'Corpo da requisição não é um JSON válido' },
+    });
+  }
   console.error(err); // erro inesperado: registra no terminal para investigar
   res.status(500).json({ erro: { codigo: 'ERRO_INTERNO', mensagem: 'Erro interno do servidor' } });
 });
