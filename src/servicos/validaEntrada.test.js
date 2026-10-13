@@ -4,10 +4,11 @@ import assert from 'node:assert/strict';
 import { validaEntrada } from './validaEntrada.js';
 import { repositorioModalidadesFalso } from './bancoFalso.js';
 
-// Corpo do contrato da T-07 (cenário ponta a ponta, Anexo A.5).
+// Corpo do contrato da T-07 (cenário ponta a ponta, Anexo A.5) + cliente PF de teste (T-09).
 function corpoValido(sobrescreve = {}) {
   return {
     identificador: 'OP-2026-0001',
+    cliente: { tipoPessoa: 'PF', documento: '529.982.247-25' },
     valor: 10000,
     modalidade: 'CONSIGNADO_INSS',
     score: 650,
@@ -33,6 +34,7 @@ test('validaEntrada: corpo válido devolve entrada normalizada (modalidade vira 
   const e = await valida(corpoValido());
 
   assert.equal(e.identificador, 'OP-2026-0001');
+  assert.deepEqual(e.cliente, { tipoPessoa: 'PF', documento: '52998224725' }); // só dígitos
   assert.equal(e.valor, 10000);
   assert.equal(e.modalidade.codigo, 'CONSIGNADO_INSS'); // objeto do repositório, não a string
   assert.equal(e.modalidade.tetoTaxaMes, 1.85);
@@ -51,7 +53,7 @@ test('validaEntrada: sem dataLiberacao usa a data de hoje (AAAA-MM-DD)', async (
   assert.equal(Number(e.dataLiberacao.slice(0, 4)), new Date().getFullYear());
 });
 
-test('validaEntrada: corpo {} lança 400 DADOS_INVALIDOS com 5 mensagens e não consulta o banco', async () => {
+test('validaEntrada: corpo {} lança 400 DADOS_INVALIDOS com 6 mensagens e não consulta o banco', async () => {
   const repositorioQueNaoPodeSerChamado = {
     buscarModalidade: async () => { throw new Error('não deveria consultar o banco sem modalidade'); },
   };
@@ -59,21 +61,64 @@ test('validaEntrada: corpo {} lança 400 DADOS_INVALIDOS com 5 mensagens e não 
 
   assert.equal(erro.status, 400);
   assert.equal(erro.codigo, 'DADOS_INVALIDOS');
-  assert.equal(erro.detalhes.length, 5);
+  assert.equal(erro.detalhes.length, 6);
 
   const texto = erro.detalhes.join(' | ');
-  for (const campo of ['identificador', 'valor', 'modalidade', 'score', 'prazoMeses']) {
+  for (const campo of ['identificador', 'cliente', 'valor', 'modalidade', 'score', 'prazoMeses']) {
     assert.ok(texto.includes(campo), `detalhes deveria citar "${campo}": ${texto}`);
   }
 });
 
-test('validaEntrada: corpo undefined (requisição sem JSON) também dá 400 com 5 mensagens', async () => {
+test('validaEntrada: corpo undefined (requisição sem JSON) também dá 400 com 6 mensagens', async () => {
   const erro = await capturaErro(undefined);
 
   assert.equal(erro.status, 400);
-  assert.equal(erro.detalhes.length, 5);
+  assert.equal(erro.detalhes.length, 6);
 });
 
+// ---------- cliente (T-09) ----------
+test('validaEntrada: cliente PJ com CNPJ válido é aceito em qualquer modalidade (Q3)', async () => {
+  const e = await valida(corpoValido({ cliente: { tipoPessoa: 'PJ', documento: '11.222.333/0001-81' } }));
+
+  assert.deepEqual(e.cliente, { tipoPessoa: 'PJ', documento: '11222333000181' });
+  assert.equal(e.modalidade.codigo, 'CONSIGNADO_INSS');
+});
+
+test('validaEntrada: cliente ausente → 1 mensagem; cliente {} → 2 mensagens (tipo e documento)', async () => {
+  const semCliente = await capturaErro(corpoValido({ cliente: undefined }));
+  assert.equal(semCliente.detalhes.length, 1);
+  assert.match(semCliente.detalhes[0], /cliente é obrigatório/);
+
+  const clienteVazio = await capturaErro(corpoValido({ cliente: {} }));
+  assert.equal(clienteVazio.detalhes.length, 2);
+  assert.match(clienteVazio.detalhes[0], /cliente\.tipoPessoa/);
+  assert.match(clienteVazio.detalhes[1], /cliente\.documento/);
+});
+
+test('validaEntrada: CPF com DV errado, CNPJ em PF e CPF em PJ são recusados com a mensagem do documento', async () => {
+  const casos = [
+    { tipoPessoa: 'PF', documento: '529.982.247-26' },
+    { tipoPessoa: 'PF', documento: '11222333000181' },
+    { tipoPessoa: 'PJ', documento: '52998224725' },
+    { tipoPessoa: 'PF', documento: '111.111.111-11' },
+  ];
+  for (const cliente of casos) {
+    const erro = await capturaErro(corpoValido({ cliente }));
+    assert.equal(erro.detalhes.length, 1, JSON.stringify(cliente));
+    assert.match(erro.detalhes[0], /cliente\.documento/);
+  }
+});
+
+test('validaEntrada: as mensagens do cliente entram na mesma lista dos outros campos', async () => {
+  const erro = await capturaErro(corpoValido({ cliente: { tipoPessoa: 'pf', documento: '123' }, valor: 0 }));
+
+  assert.equal(erro.detalhes.length, 3); // tipoPessoa, documento, valor
+  assert.match(erro.detalhes[0], /tipoPessoa/);
+  assert.match(erro.detalhes[1], /documento/);
+  assert.match(erro.detalhes[2], /valor/);
+});
+
+// ---------- demais campos (T-07) ----------
 test('validaEntrada: prazo 3 em CONSIGNADO_INSS lança 400 citando "entre 6 e 84"', async () => {
   const erro = await capturaErro(corpoValido({ prazoMeses: 3 }));
 
@@ -102,6 +147,7 @@ test('validaEntrada: modalidade inativa é recusada (e o prazo dela não é chec
 test('validaEntrada: acumula TODOS os problemas, não só o primeiro', async () => {
   const erro = await capturaErro({
     identificador: '',
+    cliente: { tipoPessoa: 'PJ', documento: '11.222.333/0001-82' }, // DV errado
     valor: -5,
     modalidade: 'VEICULOS',
     score: 1001,
@@ -110,7 +156,7 @@ test('validaEntrada: acumula TODOS os problemas, não só o primeiro', async () 
     primeiroRelacionamento: 'sim',
   });
 
-  assert.equal(erro.detalhes.length, 6);
+  assert.equal(erro.detalhes.length, 7);
 });
 
 test('validaEntrada: limites de valor (0, negativo, > 10 milhões, string)', async () => {

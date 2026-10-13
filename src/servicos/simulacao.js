@@ -8,12 +8,17 @@ import { arredonda2 } from '../lib/util.js';
 
 // Junta as peças da T-02 a T-06. É uma função PURA: recebe a entrada já validada
 // (saída de validaEntrada) e a taxa já resolvida no banco (saída de calculaTaxa) e devolve
-// o resultado no formato que o repositório grava ({ entrada, taxa, simulacoes }).
+// o resultado no formato que o repositório grava ({ cliente, entrada, taxa, simulacoes }).
 // Não sabe o que é HTTP nem banco — por isso os testes dela rodam sem MySQL.
+//
+// Desde 08/10/2026 (T-09): `entrada.cliente.tipoPessoa` define a alíquota do IOF adicional
+// (PF 0,38% / PJ 0,95%). Parcelas e cronograma não dependem do tipo de pessoa.
 //
 // Pode lançar ErroDeNegocio 422 CET_NAO_CONVERGE (calculaCet).
 export function simulaOperacao(entrada, taxa) {
-  const { valor, modalidade, score, prazoMeses, dataLiberacao, primeiroRelacionamento } = entrada;
+  const {
+    valor, modalidade, score, prazoMeses, dataLiberacao, primeiroRelacionamento, cliente,
+  } = entrada;
 
   // 1. ÚNICO lugar do projeto onde a taxa deixa de ser % e vira decimal (1.85 → 0.0185).
   const taxaMes = taxa.taxaFinalMes / 100;
@@ -23,7 +28,9 @@ export function simulaOperacao(entrada, taxa) {
   for (const calculaParcelas of [calculaPrice, calculaSac]) {
     const resultado = calculaParcelas({ valor, taxaMes, prazoMeses });
     const cronograma = geraCronograma({ parcelas: resultado.parcelas, dataLiberacao });
-    const encargos = calculaEncargos({ valor, cronograma, primeiroRelacionamento });
+    const encargos = calculaEncargos({
+      valor, cronograma, primeiroRelacionamento, tipoPessoa: cliente.tipoPessoa,
+    });
     const valorLiberado = arredonda2(valor - encargos.total); // encargos pagos antecipadamente
     const cet = calculaCet({ valorLiberado, cronograma });
     const demonstrativo = montaDemonstrativo({
@@ -47,6 +54,7 @@ export function simulaOperacao(entrada, taxa) {
   }
 
   // 3. `entrada.modalidade` volta a ser a STRING do código: é o que o repositório grava.
+  //    `cliente` fica FORA de `entrada`: na resposta da API ele é um campo de primeiro nível.
   return {
     entrada: {
       valor,
@@ -56,6 +64,7 @@ export function simulaOperacao(entrada, taxa) {
       dataLiberacao,
       primeiroRelacionamento,
     },
+    cliente: { tipoPessoa: cliente.tipoPessoa, documento: cliente.documento },
     taxa,
     simulacoes,
   };

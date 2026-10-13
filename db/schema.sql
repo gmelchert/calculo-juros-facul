@@ -46,25 +46,43 @@ CREATE TABLE IF NOT EXISTS faixas_juros (
 );
 
 -- 3) operacoes: cada operação simulada pela API (POST /api/operacoes).
+--    Versão 2 (08/10/2026, D-06): cliente (tipo_pessoa + documento) e definição do sistema de
+--    amortização (estado, sistema_definido, definido_em). Este CREATE só vale para banco novo:
+--    em banco antigo o IF NOT EXISTS pula, e o db/schema.js avisa para rodar "npm run reset".
 CREATE TABLE IF NOT EXISTS operacoes (
-  id                      INT UNSIGNED     NOT NULL AUTO_INCREMENT,
-  identificador           VARCHAR(60)      NOT NULL,
-  modalidade_codigo       VARCHAR(40)      NOT NULL,
-  valor                   DECIMAL(15,2)    NOT NULL,
+  id                      INT UNSIGNED      NOT NULL AUTO_INCREMENT,
+  identificador           VARCHAR(60)       NOT NULL,
+  tipo_pessoa             CHAR(2)           NOT NULL,                      -- 'PF' | 'PJ'
+  documento               VARCHAR(14)       NOT NULL,                      -- só dígitos: 11 (CPF) ou 14 (CNPJ)
+  modalidade_codigo       VARCHAR(40)       NOT NULL,
+  valor                   DECIMAL(15,2)     NOT NULL,
   score                   SMALLINT UNSIGNED NOT NULL,
   prazo_meses             SMALLINT UNSIGNED NOT NULL,
-  data_liberacao          DATE             NOT NULL,
-  primeiro_relacionamento BOOLEAN          NOT NULL DEFAULT FALSE,
-  faixa_risco             CHAR(1)          NOT NULL,
-  taxa_final_mes          DECIMAL(8,4)     NOT NULL,
-  cet_price_ano           DECIMAL(8,2)     NOT NULL,
-  cet_sac_ano             DECIMAL(8,2)     NOT NULL,
-  resultado               JSON             NOT NULL,
-  criado_em               DATETIME         NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  
+  data_liberacao          DATE              NOT NULL,
+  primeiro_relacionamento BOOLEAN           NOT NULL DEFAULT FALSE,
+  faixa_risco             CHAR(1)           NOT NULL,
+  taxa_final_mes          DECIMAL(8,4)      NOT NULL,
+  cet_price_ano           DECIMAL(8,2)      NOT NULL,
+  cet_sac_ano             DECIMAL(8,2)      NOT NULL,
+  resultado               JSON              NOT NULL,                      -- { cliente, entrada, taxa, simulacoes }; NUNCA recebe UPDATE
+  estado                  VARCHAR(10)       NOT NULL DEFAULT 'SIMULADA',   -- 'SIMULADA' | 'DEFINIDA'
+  sistema_definido        VARCHAR(5)        NULL,                          -- 'PRICE' | 'SAC' quando DEFINIDA
+  definido_em             DATETIME          NULL,                          -- quando foi definida
+  criado_em               DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
   PRIMARY KEY (id),
   UNIQUE KEY uk_operacoes_identificador (identificador),
+  KEY ix_operacoes_estado (estado),
   CONSTRAINT fk_operacoes_modalidade FOREIGN KEY (modalidade_codigo) REFERENCES modalidades (codigo),
   CONSTRAINT ck_operacoes_valor CHECK (valor > 0),
-  CONSTRAINT ck_operacoes_score CHECK (score <= 1000)
+  CONSTRAINT ck_operacoes_score CHECK (score <= 1000),
+  CONSTRAINT ck_operacoes_tipo_pessoa CHECK (tipo_pessoa IN ('PF', 'PJ')),
+  CONSTRAINT ck_operacoes_documento CHECK (
+    documento REGEXP '^[0-9]+$' AND (
+      (tipo_pessoa = 'PF' AND CHAR_LENGTH(documento) = 11) OR
+      (tipo_pessoa = 'PJ' AND CHAR_LENGTH(documento) = 14))),
+  CONSTRAINT ck_operacoes_estado CHECK (estado IN ('SIMULADA', 'DEFINIDA')),
+  CONSTRAINT ck_operacoes_definicao CHECK (
+    (estado = 'SIMULADA' AND sistema_definido IS NULL AND definido_em IS NULL) OR
+    (estado = 'DEFINIDA' AND sistema_definido IN ('PRICE', 'SAC') AND definido_em IS NOT NULL))
 );

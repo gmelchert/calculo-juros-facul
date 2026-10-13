@@ -82,6 +82,7 @@ Não reabra estas decisões durante a implementação — se discordar, levante 
 | Stack | Node.js **20 LTS ou mais novo** (recomendado 22), Express 5 (já no repo), **MySQL 8** acessado com a biblioteca `mysql2`. Sem ORM, sem ferramenta de migrations: `db/schema.sql` (estrutura, 3 tabelas) e `db/seed.sql` (carga inicial), rodados com `npm run schema` e `npm run seed`. Ambos são mantidos pela **equipe de banco** (`docs/backlog-db.md`). |
 | Modalidades | **6 modalidades PF com parcelas** (lista na T-01). Cheque especial e cartão rotativo ficam **fora** — o CET deles segue outro caminho (art. 6º da Res. 4.881) e não tem cronograma de parcelas. |
 | Fonte do catálogo e das taxas | **Desde 25/09/2026:** o catálogo de modalidades e a taxa de cada faixa de score vêm do **banco** (tabelas `modalidades` e `faixas_juros`), lidos **só** pelos repositórios de `src/repositorios/`. A regra `taxaFinal = min(taxaBase + spread, teto)` continua valendo, mas é aplicada no **seed** (`db/seed.sql`, equipe de banco): a API apenas escolhe a linha da faixa do score e usa `taxa_mes`. Para mudar uma taxa ou um prazo: mude o seed e rode `npm run seed` — nenhum código muda. Consequências: `GET /api/modalidades/:codigo` devolve também as 5 `faixas`; o objeto `taxa` da resposta do `POST` traz `taxaBaseMes` (a da faixa A), `taxaFinalMes`, `taxaFinalAno`, `tetoTaxaMes`, `tetoAplicado` e `descricaoFaixa` (não há mais `spreadMes`, porque o banco não guarda o spread). Os testes dos serviços usam `src/servicos/bancoFalso.js` (cópia do seed) para rodar sem MySQL. |
+| Cliente, definição e consolidado | **Desde 08/10/2026 (D-06, T-09 a T-12):** o `POST /api/operacoes` exige `cliente: { tipoPessoa (PF/PJ), documento (CPF/CNPJ) }`, validado pelos dígitos verificadores (`src/lib/documento.js`) e devolvido só com dígitos; **PJ é aceito** em qualquer modalidade e paga IOF adicional de **0,95%** (PF 0,38%, `src/dados/parametros.js`). Toda operação tem `estado` (`SIMULADA` → `DEFINIDA`) e `definicao`. Outro grupo escolhe o sistema por `POST /api/operacoes/:id/definicao { sistema }` (única e imutável: segunda vez → `409`). A equipe de contrato lê o **consolidado** por `GET /api/operacoes/:id/consolidado` ou `GET /api/operacoes/por-identificador/:identificador/consolidado` (`422` se ainda `SIMULADA`). A listagem aceita `?estado=`. A coluna `resultado` **nunca recebe UPDATE**: o calendário definitivo é `simulacoes.<sistema>.cronograma`. Banco antigo → `npm run reset`. Requisitos, desenho e plano: `docs/requisitos-definicao-cliente-contrato.md`, `docs/design-definicao-cliente-contrato.md`, `docs/plano-definicao-cliente-contrato.md`. |
 | Convenção de taxa | Taxa **efetiva mensal, capitalização composta** (mesma convenção da série do BCB, ver `docs/research_tabela-juros-brasil_20260831.md` §2.5). |
 | Unidade da taxa | **Fora** de `src/lib/` (catálogo, entrada e saída da API) a taxa é em **porcentagem** (`1.85` = 1,85% a.m.). **Dentro** de `src/lib/` a taxa é sempre **decimal** (`0.0185`). A conversão (`/ 100`) acontece em um único lugar: o serviço da T-07. |
 | Encargos | IOF e tarifa de cadastro são **pagos antecipadamente**: descontados do valor que o cliente recebe. Não são financiados junto com o principal. |
@@ -1156,6 +1157,7 @@ demonstrativo, **grava** a operação no MySQL e devolve o resultado completo.
 ```json
 {
   "identificador": "OP-2026-0001",
+  "cliente": { "tipoPessoa": "PF", "documento": "529.982.247-25" },
   "valor": 10000,
   "modalidade": "CONSIGNADO_INSS",
   "score": 650,
@@ -1165,9 +1167,15 @@ demonstrativo, **grava** a operação no MySQL e devolve o resultado completo.
 }
 ```
 
+> **Desde 08/10/2026 (T-09):** `cliente` é obrigatório. A resposta ganha `estado` (`SIMULADA`),
+> `definicao` (`null`) e `cliente` (documento só com dígitos). Com `tipoPessoa: "PJ"` (CNPJ) só
+> mudam `encargos.iof.adicional` (95,00 no A.5), `encargos.total`, `valorLiberado`, `cet` e
+> `demonstrativo` — ver o cenário PJ no fim do Anexo A.5.
+
 | Campo | Tipo | Regra | Erro se violar |
 |---|---|---|---|
 | `identificador` | string | obrigatório, 1 a 60 caracteres, único | 400 / 409 se já existir |
+| `cliente` | objeto | obrigatório: `tipoPessoa` `PF` ou `PJ` (exato) e `documento` CPF (PF) ou CNPJ (PJ) com DVs válidos; máscara `.`, `-`, `/` e espaço aceita | 400 (uma mensagem se ausente; uma por campo se inválido) |
 | `valor` | number | obrigatório, > 0 e ≤ 10.000.000 | 400 |
 | `modalidade` | string | obrigatório, deve existir no catálogo (T-01) | 400 |
 | `score` | inteiro | obrigatório, 0 a 1000 | 400 |
@@ -1599,6 +1607,10 @@ GET /api/operacoes/:id
   → 400 DADOS_INVALIDOS se :id não for inteiro positivo
 ```
 
+> **Desde 08/10/2026 (T-12):** a listagem aceita `?estado=SIMULADA|DEFINIDA` (outro valor → 400) e
+> cada item traz também `estado`, `definicao` (`null` ou `{ sistema, definidoEm }`) e `cliente`.
+> O detalhe traz os mesmos três campos e continua devolvendo as duas simulações.
+
 ### Passo a passo
 
 **1. Repositório — já pronto.** A função `listar({ pagina, tamanho })` já existe em
@@ -1787,16 +1799,39 @@ Taxa: faixa **B** (+0,50) → 1,60 + 0,50 = 2,10 → **teto 1,85% a.m.** (`tetoA
 Segundo exemplo de taxa: `CREDITO_PESSOAL`, score 720 → faixa B → 4,50 + 0,50 = **5,00%**
 (`tetoAplicado: false`).
 
+**Cliente de teste (T-09):** PF `529.982.247-25` (gravado `52998224725`); PJ `11.222.333/0001-81`
+(gravado `11222333000181`). Inválidos: `529.982.247-26` (DV), `111.111.111-11` (todos iguais),
+`11.222.333/0001-82` (DV).
+
+**A.5 com cliente PJ** (mesmos parâmetros; só o IOF adicional muda, 0,95% = 95,00). Parcelas e
+cronograma são **idênticos** aos de PF:
+
+| | PRICE (PJ) | SAC (PJ) |
+|---|---:|---:|
+| IOF (diário / adicional / total) | 167,65 / 95,00 / 262,65 | 162,22 / 95,00 / 257,22 |
+| Encargos total | 312,65 | 307,22 |
+| valorLiberado | 9.687,35 | 9.692,78 |
+| **CET a.a. / a.m.** | **32,38% / 2,37%** | **32,49% / 2,37%** |
+| Total devido | 11.555,53 | 11.509,72 |
+
+**Definição e consolidado (T-10/T-11):** depois de `POST /api/operacoes/:id/definicao { "sistema": "PRICE" }`,
+`GET /api/operacoes/:id/consolidado` devolve `sistema PRICE`, `resumo { parcelaFixa 936.91, totalJuros 1242.88,
+totalPago 11242.88 }`, encargos 255,65, `valorLiberado 9744.35`, CET 30,89 / 2,27, `totalDevido 11498.53` e
+`calendario` com as 12 parcelas de A.3 — e **nada** do SAC. Contratos completos em
+`docs/design-definicao-cliente-contrato.md` §3.
+
 ## Anexo B — Catálogo de erros
 
 | HTTP | `codigo` | Quando | Tarefa |
 |---|---|---|---|
 | 400 | `DADOS_INVALIDOS` | corpo ou query string inválidos; `detalhes` lista cada problema | T-07, T-08 |
 | 404 | `MODALIDADE_NAO_ENCONTRADA` | `GET /modalidades/:codigo` com código inexistente | T-01 |
-| 404 | `OPERACAO_NAO_ENCONTRADA` | `GET /operacoes/:id` com id inexistente | T-08 |
+| 404 | `OPERACAO_NAO_ENCONTRADA` | `GET /operacoes/:id`, `POST /operacoes/:id/definicao` ou `GET .../consolidado` com id/identificador inexistente | T-08, T-10, T-11 |
 | 409 | `IDENTIFICADOR_DUPLICADO` | `POST /operacoes` com identificador já gravado | T-07 |
+| 409 | `AMORTIZACAO_JA_DEFINIDA` | `POST /operacoes/:id/definicao` em operação já `DEFINIDA` (com qualquer sistema; a mensagem diz qual já vale) | T-10 |
 | 422 | `SCORE_INSUFICIENTE` | score na faixa E (0–199) | T-07 |
 | 422 | `CET_NAO_CONVERGE` | bisseção não encontra raiz em [0, 1000% a.a.] | T-06 |
+| 422 | `OPERACAO_NAO_DEFINIDA` | `GET .../consolidado` de operação ainda `SIMULADA` (falta escolher o sistema) | T-11 |
 | 500 | `ERRO_INTERNO` | qualquer erro não previsto (banco fora, bug) — detalhes só no terminal | T-01 |
 | 503 | — | `GET /health` quando o banco não responde | T-07 |
 

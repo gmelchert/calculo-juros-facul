@@ -9,7 +9,7 @@ import { arredonda2 } from './util.js';
 function cenarioReferencia() {
   const { parcelas } = calculaPrice({ valor: 10000, taxaMes: 0.02, prazoMeses: 12 });
   const cronograma = geraCronograma({ parcelas, dataLiberacao: '2026-10-30' });
-  const encargos = calculaEncargos({ valor: 10000, cronograma, primeiroRelacionamento: true });
+  const encargos = calculaEncargos({ valor: 10000, cronograma, primeiroRelacionamento: true, tipoPessoa: 'PF' });
   return { cronograma, encargos };
 }
 

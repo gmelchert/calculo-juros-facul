@@ -1,6 +1,7 @@
 import * as repositorioModalidades from '../repositorios/modalidades.js';
 import { ErroDeNegocio } from '../lib/erros.js';
 import { ehDataValida } from '../lib/datas.js';
+import { validaCliente } from '../lib/documento.js';
 
 const IDENTIFICADOR_MAX = 60; // mesmo tamanho da coluna operacoes.identificador (VARCHAR(60))
 const VALOR_MAXIMO = 10_000_000;
@@ -23,18 +24,22 @@ function hojeIso() {
 }
 
 // Valida o corpo do POST /api/operacoes e devolve a entrada NORMALIZADA:
-//   { identificador, valor, modalidade (LINHA da tabela modalidades), score, prazoMeses,
+//   { identificador, cliente ({ tipoPessoa, documento só com dígitos }), valor,
+//     modalidade (LINHA da tabela modalidades), score, prazoMeses,
 //     dataLiberacao (hoje se ausente), primeiroRelacionamento (false se ausente) }
 //
 // A modalidade é conferida no banco (tabela modalidades, via repositório) — por isso a função
 // é async. `repositorio` só é passado pelos testes, que usam um "banco falso".
+//
+// Desde 08/10/2026 (T-09) o `cliente` é obrigatório: tipoPessoa PF/PJ e CPF/CNPJ válido
+// (src/lib/documento.js). PJ pode usar qualquer modalidade do catálogo (decisão Q3).
 //
 // Não para no primeiro problema: acumula todos em `erros` e lança um único
 // ErroDeNegocio 400 DADOS_INVALIDOS com a lista completa em `detalhes`.
 export async function validaEntrada(body, repositorio = repositorioModalidades) {
   const dados = body ?? {}; // corpo vazio / sem JSON não pode derrubar o servidor
   const {
-    identificador, valor, modalidade, score, prazoMeses, dataLiberacao, primeiroRelacionamento,
+    identificador, cliente, valor, modalidade, score, prazoMeses, dataLiberacao, primeiroRelacionamento,
   } = dados;
 
   const erros = [];
@@ -45,6 +50,10 @@ export async function validaEntrada(body, repositorio = repositorioModalidades) 
   } else if (identificador.length > IDENTIFICADOR_MAX) {
     erros.push(`identificador deve ter no máximo ${IDENTIFICADOR_MAX} caracteres`);
   }
+
+  // cliente: { tipoPessoa, documento } — uma mensagem se ausente, uma por campo se inválido
+  const resultadoCliente = validaCliente(cliente);
+  erros.push(...resultadoCliente.erros);
 
   // valor: número finito, > 0 e <= 10.000.000
   if (typeof valor !== 'number' || !Number.isFinite(valor) || valor <= 0) {
@@ -101,6 +110,7 @@ export async function validaEntrada(body, repositorio = repositorioModalidades) 
 
   return {
     identificador: identificador.trim(),
+    cliente: resultadoCliente.cliente,
     valor,
     modalidade: modalidadeBanco,
     score,

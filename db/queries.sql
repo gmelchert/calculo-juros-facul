@@ -94,3 +94,42 @@ FROM modalidades m
 LEFT JOIN operacoes o ON m.codigo = o.modalidade_codigo
 GROUP BY m.codigo, m.nome
 ORDER BY total_operacoes DESC;
+
+
+-- ============================================================================
+-- 6. DEFINIÇÃO DO SISTEMA DE AMORTIZAÇÃO (D-06 / T-10) — repositório `definir`
+-- Só muda quem ainda está SIMULADA: se duas definições chegarem ao mesmo tempo, a
+-- segunda afeta 0 linhas e a API responde 409. NUNCA altera a coluna `resultado`.
+-- ============================================================================
+SET @operacao_id = 1;
+SET @sistema = 'PRICE'; -- ou 'SAC'
+
+UPDATE operacoes
+   SET estado = 'DEFINIDA', sistema_definido = @sistema, definido_em = NOW()
+ WHERE id = @operacao_id AND estado = 'SIMULADA';
+
+
+-- ============================================================================
+-- 7. OPERAÇÃO PELO IDENTIFICADOR (D-06 / T-11) — repositório `buscarPorIdentificador`
+-- A collation da tabela (utf8mb4_unicode_ci) não diferencia maiúsculas.
+-- ============================================================================
+SELECT id, identificador, criado_em, estado, sistema_definido, definido_em, resultado
+  FROM operacoes
+ WHERE identificador = 'OP-2026-0001';
+
+
+-- ============================================================================
+-- 8. LISTAGEM FILTRADA POR ESTADO (D-06 / T-12) — repositório `listar({ estado })`
+-- A equipe de contrato usa estado = 'DEFINIDA' para achar o que está pronto.
+-- ============================================================================
+SET @estado = 'DEFINIDA';
+
+SELECT id, identificador, tipo_pessoa, documento, modalidade_codigo, valor, score, prazo_meses,
+       data_liberacao, faixa_risco, taxa_final_mes, cet_price_ano, cet_sac_ano,
+       estado, sistema_definido, definido_em, criado_em
+  FROM operacoes
+ WHERE estado = @estado
+ ORDER BY id DESC
+ LIMIT 10 OFFSET 0;
+
+SELECT COUNT(*) AS total FROM operacoes WHERE estado = @estado;

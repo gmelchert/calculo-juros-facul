@@ -9,7 +9,7 @@ import { arredonda2 } from './util.js';
 test('Demonstrativo: cenário de referência bate com o Anexo A.4', () => {
   const { parcelas, totalJuros } = calculaPrice({ valor: 10000, taxaMes: 0.02, prazoMeses: 12 });
   const cronograma = geraCronograma({ parcelas, dataLiberacao: '2026-10-30' });
-  const encargos = calculaEncargos({ valor: 10000, cronograma, primeiroRelacionamento: true });
+  const encargos = calculaEncargos({ valor: 10000, cronograma, primeiroRelacionamento: true, tipoPessoa: 'PF' });
 
   const demo = montaDemonstrativo({ valor: 10000, totalJuros, encargos, cronograma });
 
@@ -30,7 +30,7 @@ test('Demonstrativo: cenário de referência bate com o Anexo A.4', () => {
 test('Demonstrativo: os 4 componentes somados fecham exatamente o total devido', () => {
   const { parcelas, totalJuros } = calculaPrice({ valor: 10000, taxaMes: 0.02, prazoMeses: 12 });
   const cronograma = geraCronograma({ parcelas, dataLiberacao: '2026-10-30' });
-  const encargos = calculaEncargos({ valor: 10000, cronograma, primeiroRelacionamento: true });
+  const encargos = calculaEncargos({ valor: 10000, cronograma, primeiroRelacionamento: true, tipoPessoa: 'PF' });
 
   const demo = montaDemonstrativo({ valor: 10000, totalJuros, encargos, cronograma });
 

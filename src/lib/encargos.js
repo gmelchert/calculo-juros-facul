@@ -9,7 +9,14 @@ const { IOF_ALIQUOTA_DIARIA, IOF_ALIQUOTA_ADICIONAL, IOF_DIAS_MAXIMO, TARIFA_CAD
 // cronograma: saída da T-04 (geraCronograma) — cada parcela precisa ter
 //             `amortizacao` e `diasCorridos`
 // primeiroRelacionamento: boolean — só cobra tarifa de cadastro se true
-export function calculaEncargos({ valor, cronograma, primeiroRelacionamento }) {
+// tipoPessoa: 'PF' ou 'PJ' — escolhe a alíquota do IOF adicional (0,38% / 0,95%).
+//             Obrigatório. Valor fora disso é bug (a entrada já foi validada), então lança Error
+//             comum (vira 500), não ErroDeNegocio.
+export function calculaEncargos({ valor, cronograma, primeiroRelacionamento, tipoPessoa }) {
+  if (!Object.hasOwn(IOF_ALIQUOTA_ADICIONAL, tipoPessoa)) {
+    throw new Error(`calculaEncargos: tipoPessoa inválido (${tipoPessoa}); esperado PF ou PJ`);
+  }
+
   // IOF diário: soma, parcela a parcela, o IOF sobre a amortização daquele mês,
   // proporcional aos dias corridos até o vencimento (limitados a 365 dias).
   // Não arredondamos dentro do laço — só o total, para não divergir centavos.
@@ -20,8 +27,8 @@ export function calculaEncargos({ valor, cronograma, primeiroRelacionamento }) {
   }
   const iofDiario = arredonda2(somaDiario);
 
-  // IOF adicional: 0,38% sobre o valor total do crédito, uma única vez.
-  const iofAdicional = arredonda2(valor * IOF_ALIQUOTA_ADICIONAL);
+  // IOF adicional: 0,38% (PF) ou 0,95% (PJ) sobre o valor total do crédito, uma única vez.
+  const iofAdicional = arredonda2(valor * IOF_ALIQUOTA_ADICIONAL[tipoPessoa]);
 
   const iofTotal = arredonda2(iofDiario + iofAdicional);
 

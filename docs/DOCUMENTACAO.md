@@ -201,13 +201,17 @@ backlog.
 
 ### 6.4 Tabela `operacoes`
 
-Cada operação de crédito simulada (seria preenchida por um futuro `POST /api/operacoes` — ver
-§15). Guarda colunas "planas" para listagem rápida e o resultado completo em uma coluna `JSON`.
+Cada operação de crédito simulada pelo `POST /api/operacoes` (ver §15). Guarda colunas "planas"
+para listagem rápida e o resultado completo em uma coluna `JSON`. **Versão 2 desde 08/10/2026
+(D-06):** cliente e definição do sistema de amortização. Banco criado antes disso precisa de
+`npm run reset` (o `db/schema.js` avisa).
 
 | Coluna | Tipo | Nulo? | Descrição |
 |---|---|---|---|
 | `id` | INT UNSIGNED AUTO_INCREMENT | não (PK) | Id devolvido pela API |
 | `identificador` | VARCHAR(60) | não (UNIQUE) | Enviado pelo cliente da API |
+| `tipo_pessoa` | CHAR(2) | não (`PF` ou `PJ`) | Tipo de pessoa do cliente (v2) |
+| `documento` | VARCHAR(14) | não (só dígitos; 11 se PF, 14 se PJ) | CPF ou CNPJ do cliente (v2) |
 | `modalidade_codigo` | VARCHAR(40) | não (FK → `modalidades.codigo`) | |
 | `valor` | DECIMAL(15,2) | não (`> 0`) | Valor solicitado, em reais |
 | `score` | SMALLINT UNSIGNED | não (`≤ 1000`) | Score do cliente |
@@ -217,11 +221,19 @@ Cada operação de crédito simulada (seria preenchida por um futuro `POST /api/
 | `faixa_risco` | CHAR(1) | não | Faixa usada na precificação (A–D) |
 | `taxa_final_mes` | DECIMAL(8,4) | não | % ao mês efetivamente aplicada |
 | `cet_price_ano` / `cet_sac_ano` | DECIMAL(8,2) | não | CET % ao ano em cada sistema de amortização |
-| `resultado` | JSON | não | `{ entrada, taxa, simulacoes }` — a resposta completa da simulação |
+| `resultado` | JSON | não | `{ cliente, entrada, taxa, simulacoes }` — a resposta completa da simulação. **Nunca recebe UPDATE**: o calendário definitivo é `simulacoes.<sistema_definido>.cronograma` |
+| `estado` | VARCHAR(10) | não (default `SIMULADA`) | `SIMULADA` ao nascer; `DEFINIDA` depois da escolha do sistema (v2) |
+| `sistema_definido` | VARCHAR(5) | sim | `PRICE` ou `SAC` quando `DEFINIDA` (v2) |
+| `definido_em` | DATETIME | sim | Quando foi definida (v2) |
 | `criado_em` | DATETIME | não (default `CURRENT_TIMESTAMP`) | |
 
-Restrições: `uk_operacoes_identificador` (UNIQUE), `fk_operacoes_modalidade` (FK),
-`ck_operacoes_valor` (`valor > 0`), `ck_operacoes_score` (`score <= 1000`).
+Restrições: `uk_operacoes_identificador` (UNIQUE), `ix_operacoes_estado` (índice do filtro da
+listagem), `fk_operacoes_modalidade` (FK), `ck_operacoes_valor` (`valor > 0`), `ck_operacoes_score`
+(`score <= 1000`), `ck_operacoes_tipo_pessoa` (`PF`/`PJ`), `ck_operacoes_documento` (só dígitos, 11
+ou 14 conforme o tipo), `ck_operacoes_estado` (`SIMULADA`/`DEFINIDA`) e `ck_operacoes_definicao`
+(`DEFINIDA` exige `sistema_definido` e `definido_em`; `SIMULADA` exige os dois nulos). A definição é
+o `UPDATE ... WHERE id = ? AND estado = 'SIMULADA'` (Q10 em `db/queries.sql`): se duas chegarem ao
+mesmo tempo, só uma afeta a linha.
 
 ### 6.5 Dados iniciais (seed)
 
@@ -503,7 +515,9 @@ esse arquivo. A senha efetivamente configurada nesta máquina não é reproduzid
 7. **Rodar o schema:** `mysql -u root -p < db/schema.sql`. Resultado esperado: banco
    `calculo_juros` com 3 tabelas.
 8. **Rodar o seed:** `mysql -u root -p < db/seed.sql`. Resultado esperado: 6 modalidades, 30
-   faixas.
+   faixas. *(Equivalente pelo npm: `npm run schema` e `npm run seed`. Desde 08/10/2026, para
+   recriar tudo do zero — ou atualizar um banco antigo para a versão 2 da tabela `operacoes` —
+   use `npm run reset`: apaga o banco, roda o schema e o seed. Apaga as operações gravadas.)*
 9. *(Opcional, só para testar consultas)* Rodar `db/exemplos-operacoes.sql` e depois
    `db/consultas.sql`.
 10. **Subir a API:** `npm run dev`. Resultado esperado no terminal:
@@ -561,9 +575,11 @@ continua em `docs/backlog-api.md`.
 |---|---|---|---|
 | `GET /api/modalidades` | T-01 | Lista as modalidades **ativas** da tabela `modalidades` via `listarModalidades()` | rota → repositório |
 | `GET /api/modalidades/:codigo` | T-01 | Uma modalidade via `buscarModalidade()` mais as 5 `faixas` via `listarFaixas()`; `404 MODALIDADE_NAO_ENCONTRADA` | rota → repositório |
-| `POST /api/operacoes` | T-07 | Valida conferindo a modalidade no banco (`src/servicos/validaEntrada.js`), lê a taxa da faixa do score em `faixas_juros` (`src/servicos/taxa.js`), simula Price e SAC com cronograma, IOF, CET e demonstrativo (`src/servicos/simulacao.js`, função pura) e grava via `operacoes.salvar()`; devolve `201` com a operação relida por `buscarPorId()` | rota → serviços → lib → repositórios |
-| `GET /api/operacoes?pagina=&tamanho=` | T-08 | Listagem paginada (resumo, sem cronograma) via `operacoes.listar()`; `400` se `pagina < 1` ou `tamanho` fora de 1..100 | rota → repositório |
-| `GET /api/operacoes/:id` | T-08 | Operação completa via `operacoes.buscarPorId()`; `404 OPERACAO_NAO_ENCONTRADA`, `400` se `:id` não é inteiro ≥ 1 | rota → repositório |
+| `POST /api/operacoes` | T-07, T-09 | Valida conferindo a modalidade no banco e o CPF/CNPJ do cliente (`src/servicos/validaEntrada.js` + `src/lib/documento.js`), lê a taxa da faixa do score em `faixas_juros` (`src/servicos/taxa.js`), simula Price e SAC com cronograma, IOF **por tipo de pessoa** (PF 0,38% / PJ 0,95%), CET e demonstrativo (`src/servicos/simulacao.js`, função pura) e grava via `operacoes.salvar()`; devolve `201` com a operação relida por `buscarPorId()`, em estado `SIMULADA` | rota → serviços → lib → repositórios |
+| `GET /api/operacoes?pagina=&tamanho=&estado=` | T-08, T-12 | Listagem paginada (resumo, sem cronograma) via `operacoes.listar()`; itens com `estado`, `definicao` e `cliente`; `estado` opcional filtra (`SIMULADA`/`DEFINIDA`); `400` se `pagina < 1`, `tamanho` fora de 1..100 ou `estado` inválido | rota → repositório |
+| `GET /api/operacoes/:id` | T-08 | Operação completa via `operacoes.buscarPorId()` — as duas simulações mais `estado`, `definicao` e `cliente`; `404 OPERACAO_NAO_ENCONTRADA`, `400` se `:id` não é inteiro ≥ 1 | rota → repositório |
+| `POST /api/operacoes/:id/definicao` | T-10 | Outro grupo escolhe `{ sistema: PRICE \| SAC }`. Regras puras em `src/servicos/definicao.js` (`400` sistema inválido, `409 AMORTIZACAO_JA_DEFINIDA`); gravação atômica via `operacoes.definir()` (`UPDATE ... WHERE estado = 'SIMULADA'`, corrida → `409`); devolve `200` com a operação `DEFINIDA`. `resultado` não muda | rota → serviço → repositório |
+| `GET /api/operacoes/:id/consolidado` e `GET /api/operacoes/por-identificador/:identificador/consolidado` | T-11 | Documento para a equipe de contrato, montado por `src/servicos/consolidado.js` (função pura, sem recálculo) a partir da operação (`buscarPorId()` / `buscarPorIdentificador()`) e do nome da modalidade: só o sistema escolhido, com `calendario` = cronograma gravado; `422 OPERACAO_NAO_DEFINIDA` se ainda `SIMULADA`, `404` se não existe | rota → serviço → repositórios |
 | `GET /api/docs` e `GET /api/docs.json` | — | Swagger UI e a especificação OpenAPI 3 crua. O contrato é escrito à mão em `src/openapi.js` (`swagger-ui-express` só serve a página); o exemplo da operação é calculado por `simulaOperacao`, por isso nunca diverge do cálculo real | rota |
 
 Também existem, no código: as funções puras de cálculo (`src/lib/price.js`, `sac.js`, `datas.js`,
@@ -652,6 +668,9 @@ há, hoje, nenhuma chamada de rede de saída no código-fonte de `src/`.
 | `dev` | `npm run dev` → `node --watch --env-file=.env index.js` | Sobe a API reiniciando a cada alteração salva | Sim |
 | `test` | `npm test` → `node --test` | Rodaria os testes `*.test.js` do projeto (nenhum existe ainda) | Comando existe; **não há testes para rodar** |
 | `db:teste` | `npm run db:teste` → `node --env-file=.env db/testa-repositorios.mjs` | Testa as 9 funções de `src/repositorios/` contra o banco real | **Sim — 9/9 passaram** nesta sessão |
+| `schema` / `seed` | `npm run schema` / `npm run seed` | Rodam `db/schema.sql` e `db/seed.sql`; desde 08/10/2026 o `schema` confere se `operacoes` está na versão 2 e, se não, pede o `reset` | Sim (08/10/2026) |
+| `reset` | `npm run reset` → `node --env-file=.env db/reset.js` | **Apaga** o banco e recria do zero (`reset.sql` → `schema.sql` → `seed.sql`). Caminho oficial para atualizar um banco antigo | Sim (08/10/2026: 6 modalidades, 30 faixas, 0 operações) |
+| `verifica` | `npm run verifica` → `node --env-file=.env scripts/verifica-endpoints.mjs` | Ponta a ponta contra o MySQL local: 49 cenários (T-01 a T-12 e legado), limpa o que criou | Sim (08/10/2026: 49/49) |
 
 ## 21. Testes
 

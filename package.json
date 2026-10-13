@@ -10,7 +10,8 @@
     "test": "node --test",
     "verifica": "node --env-file=.env scripts/verifica-endpoints.mjs",
     "schema": "node --env-file=.env db/schema.js",
-    "seed": "node --env-file=.env db/seed.js"
+    "seed": "node --env-file=.env db/seed.js",
+    "reset": "node --env-file=.env db/reset.js"
   },
   "engines": {
     "node": ">=20.6"

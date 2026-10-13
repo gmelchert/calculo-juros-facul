@@ -18,9 +18,14 @@ test('OpenAPI: todos os endpoints da API estão documentados (e nenhum a mais)',
     '/modalidades',
     '/modalidades/{codigo}',
     '/operacoes',
+    '/operacoes/por-identificador/{identificador}/consolidado',
     '/operacoes/{id}',
+    '/operacoes/{id}/consolidado',
+    '/operacoes/{id}/definicao',
   ]);
   assert.deepEqual(Object.keys(openapi.paths['/operacoes']).sort(), ['get', 'post']);
+  assert.deepEqual(Object.keys(openapi.paths['/operacoes/{id}/definicao']), ['post']);
+  assert.deepEqual(Object.keys(openapi.paths['/operacoes/{id}/consolidado']), ['get']);
 });
 
 test('OpenAPI: toda $ref aponta para um schema que existe', () => {
@@ -42,15 +47,42 @@ test('OpenAPI: o exemplo da operação é calculado pelo código e bate com o ce
   assert.equal(exemplo.simulacoes.SAC.cet.anualPercentual, 30.96);
   assert.equal(exemplo.simulacoes.PRICE.cronograma.length, 12);
   assert.equal(exemplo.entrada.modalidade, 'CONSIGNADO_INSS');
+  // T-09/T-10: cliente só com dígitos; nasce SIMULADA sem definição
+  assert.deepEqual(exemplo.cliente, { tipoPessoa: 'PF', documento: '52998224725' });
+  assert.equal(exemplo.estado, 'SIMULADA');
+  assert.equal(exemplo.definicao, null);
+  assert.equal('cliente' in exemplo.entrada, false);
+});
+
+test('OpenAPI: o exemplo da definição é a mesma operação em estado DEFINIDA', () => {
+  const exemplo = openapi.paths['/operacoes/{id}/definicao'].post.responses[200].content['application/json'].example;
+  assert.equal(exemplo.estado, 'DEFINIDA');
+  assert.deepEqual(exemplo.definicao, { sistema: 'PRICE', definidoEm: '2026-10-08 15:12:40' });
+  assert.equal(exemplo.simulacoes.PRICE.cronograma.length, 12);
+});
+
+test('OpenAPI: o exemplo do consolidado é calculado pelo código (montaConsolidado) e só tem o sistema escolhido', () => {
+  const porId = openapi.paths['/operacoes/{id}/consolidado'].get.responses[200].content['application/json'].example;
+  const porIdentificador = openapi.paths['/operacoes/por-identificador/{identificador}/consolidado'].get.responses[200].content['application/json'].example;
+
+  assert.deepEqual(porId, porIdentificador);
+  assert.equal(porId.sistema, 'PRICE');
+  assert.deepEqual(porId.resumo, { parcelaFixa: 936.91, totalJuros: 1242.88, totalPago: 11242.88 });
+  assert.equal(porId.cet.anualPercentual, 30.89);
+  assert.equal(porId.calendario.length, 12);
+  assert.equal(porId.produto.nome, 'Crédito pessoal consignado INSS');
+  assert.equal(JSON.stringify(porId).includes('SAC'), false);
 });
 
 test('OpenAPI: os códigos de erro do schema Erro são os do Anexo B do backlog', () => {
   assert.deepEqual(openapi.components.schemas.Erro.properties.erro.properties.codigo.enum.sort(), [
+    'AMORTIZACAO_JA_DEFINIDA',
     'CET_NAO_CONVERGE',
     'DADOS_INVALIDOS',
     'ERRO_INTERNO',
     'IDENTIFICADOR_DUPLICADO',
     'MODALIDADE_NAO_ENCONTRADA',
+    'OPERACAO_NAO_DEFINIDA',
     'OPERACAO_NAO_ENCONTRADA',
     'SCORE_INSUFICIENTE',
   ]);
