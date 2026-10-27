@@ -5,9 +5,12 @@ import { calculaTaxa } from '../servicos/taxa.js';
 import { simulaOperacao } from '../servicos/simulacao.js';
 import { avaliaDefinicao, erroJaDefinida, ESTADOS } from '../servicos/definicao.js';
 import { montaConsolidado } from '../servicos/consolidado.js';
+
 import * as repositorio from '../repositorios/operacoes.js';
 import * as repositorioModalidades from '../repositorios/modalidades.js';
+
 import { ErroDeNegocio } from '../lib/erros.js';
+import { finOpsApi } from '../lib/api.js';
 
 const router = Router();
 
@@ -162,6 +165,9 @@ router.post('/:id/definicao', async (req, res) => {
   }
 
   // 4. Relê para devolver a operação completa já DEFINIDA (estado, definicao, simulacoes).
+
+  finOpsApi.post('/operacoes', repositorio.buscarPorId(id));
+
   res.json(await repositorio.buscarPorId(id));
 });
 
