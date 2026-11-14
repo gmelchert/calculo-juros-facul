@@ -5,6 +5,21 @@ import { ErroDeNegocio } from './lib/erros.js';
 
 const app = express();
 
+// CORS: libera a API para qualquer origem (*). Vem antes de tudo para que até as
+// respostas de erro (ex.: JSON inválido) saiam com os cabeçalhos e o navegador não as bloqueie.
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  // Aceita os cabeçalhos que o navegador disser que vai mandar (Content-Type, Authorization...).
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    req.headers['access-control-request-headers'] ?? 'Content-Type, Authorization',
+  );
+  // Preflight: o navegador pergunta antes com OPTIONS; respondemos 204 sem passar pelas rotas.
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 // Middlewares globais
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

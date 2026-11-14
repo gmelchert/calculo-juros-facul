@@ -309,6 +309,11 @@ sistema escolhido e a data/hora, e devolve a operação completa. O calendário 
 A definição é **única e imutável**: uma segunda chamada, com qualquer sistema, responde 409.
 Para mudar de ideia, crie outra operação (outro identificador). Se duas definições chegarem ao
 mesmo tempo, só uma vence; a outra recebe o mesmo 409.
+
+Depois de gravar, a operação definida (este mesmo JSON de resposta) é enviada por POST para as
+APIs dos outros grupos configuradas no \`.env\`: FinOps (\`FINOPS_URL\`) e Esteira de Documentos
+(\`DOCUMENTOS_URL\` → \`/api/documentos/juros\`). Uma falha nesses envios **não** muda a resposta:
+a definição já está gravada, e o erro só aparece no terminal da API.
 `.trim(),
         operationId: 'definirSistema',
         parameters: [parametroId],

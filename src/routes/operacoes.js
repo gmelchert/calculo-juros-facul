@@ -10,7 +10,7 @@ import * as repositorio from '../repositorios/operacoes.js';
 import * as repositorioModalidades from '../repositorios/modalidades.js';
 
 import { ErroDeNegocio } from '../lib/erros.js';
-import { finOpsApi } from '../lib/api.js';
+import { notificaDefinicao } from '../servicos/integracoes.js';
 
 const router = Router();
 
@@ -165,10 +165,13 @@ router.post('/:id/definicao', async (req, res) => {
   }
 
   // 4. Relê para devolver a operação completa já DEFINIDA (estado, definicao, simulacoes).
+  const definida = await repositorio.buscarPorId(id);
 
-  finOpsApi.post('/operacoes', repositorio.buscarPorId(id));
+  // 5. Manda a operação definida para FinOps e Documentos. Nunca lança erro: a definição já está
+  //    gravada, então falha de outro grupo só aparece no terminal (ver servicos/integracoes.js).
+  await notificaDefinicao(definida);
 
-  res.json(await repositorio.buscarPorId(id));
+  res.json(definida);
 });
 
 // GET /api/operacoes/:id — operação completa, mesmo formato da resposta do POST (T-08)
