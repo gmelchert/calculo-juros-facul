@@ -7,13 +7,17 @@ import { pool } from '../db.js';
 // é gravada UMA vez, no INSERT, e NUNCA recebe UPDATE. É ela que guarda as duas simulações, e o
 // calendário definitivo de uma operação DEFINIDA é `resultado.simulacoes[sistema_definido].cronograma`.
 
+// Situação do registro no FinOps (src/servicos/finops.js). Só têm valor quando DEFINIDA.
+const COLUNAS_FINOPS = 'finops_status, finops_id, finops_erro, finops_tentativa_em';
+
 // Colunas usadas para montar a operação completa (POST, GET /:id, definição, consolidado).
-const COLUNAS_COMPLETAS = 'id, identificador, criado_em, estado, sistema_definido, definido_em, resultado';
+const COLUNAS_COMPLETAS = `id, identificador, criado_em, estado, sistema_definido, definido_em,
+       ${COLUNAS_FINOPS}, resultado`;
 
 // Colunas "planas" da listagem (sem o JSON, para a resposta ficar leve).
 const COLUNAS_RESUMO = `id, identificador, tipo_pessoa, documento, modalidade_codigo, valor, score, prazo_meses,
        data_liberacao, faixa_risco, taxa_final_mes, cet_price_ano, cet_sac_ano,
-       estado, sistema_definido, definido_em, criado_em`;
+       estado, sistema_definido, definido_em, ${COLUNAS_FINOPS}, criado_em`;
 
 // `definicao` é null enquanto a operação está SIMULADA; depois traz o sistema e quando foi definida.
 // Única regra de montagem, usada pelo detalhe e pela listagem.
@@ -23,8 +27,22 @@ function montaDefinicao(linha) {
     : null;
 }
 
+// `finops` é null enquanto SIMULADA; depois diz como está o registro da operação no FinOps:
+// status PENDENTE (ainda não enviada), REGISTRADA (`id` = id da operação lá) ou FALHOU (`erro` = motivo
+// da última tentativa, em `tentativaEm`). Usado pelo detalhe e pela listagem.
+function montaFinops(linha) {
+  return linha.estado === 'DEFINIDA'
+    ? {
+      status: linha.finops_status,
+      id: linha.finops_id,
+      erro: linha.finops_erro,
+      tentativaEm: linha.finops_tentativa_em,
+    }
+    : null;
+}
+
 // Linha completa → operação no formato da API: { id, identificador, criadoEm, estado, definicao,
-// cliente, entrada, taxa, simulacoes } (os quatro últimos vêm do JSON `resultado`).
+// finops, cliente, entrada, taxa, simulacoes } (os quatro últimos vêm do JSON `resultado`).
 function linhaParaOperacao(linha) {
   // mysql2 já converte a coluna JSON em objeto; se em algum ambiente vier como texto, use JSON.parse.
   const resultado = typeof linha.resultado === 'string' ? JSON.parse(linha.resultado) : linha.resultado;
@@ -34,6 +52,7 @@ function linhaParaOperacao(linha) {
     criadoEm: linha.criado_em,
     estado: linha.estado,
     definicao: montaDefinicao(linha),
+    finops: montaFinops(linha),
     ...resultado,
   };
 }
@@ -87,12 +106,28 @@ export async function buscarPorIdentificador(identificador) {
 // Devolve true se mudou de estado. Devolve false se a operação não existe OU já estava DEFINIDA:
 // o `AND estado = 'SIMULADA'` faz o banco decidir quem vence quando duas definições chegam ao
 // mesmo tempo (mesma ideia da corrida do identificador na T-07). Não toca em `resultado`.
+// O registro no FinOps nasce PENDENTE e é atualizado por registraTentativaFinops logo depois.
 export async function definir({ id, sistema }) {
   const [resultado] = await pool.query(
     `UPDATE operacoes
-        SET estado = 'DEFINIDA', sistema_definido = ?, definido_em = NOW()
+        SET estado = 'DEFINIDA', sistema_definido = ?, definido_em = NOW(), finops_status = 'PENDENTE'
       WHERE id = ? AND estado = 'SIMULADA'`,
     [sistema, id],
+  );
+  return resultado.affectedRows === 1;
+}
+
+// Grava o resultado de uma tentativa de registrar a operação no FinOps (T-13).
+// status: 'REGISTRADA' (com finopsId) ou 'FALHOU' (com erro). Em caso de falha o finops_id de um
+// registro anterior é preservado (COALESCE): a falha é desta tentativa, não do registro.
+// Devolve true se a operação existe e está DEFINIDA (só essas têm registro no FinOps).
+export async function registraTentativaFinops({ id, status, finopsId = null, erro = null }) {
+  const [resultado] = await pool.query(
+    `UPDATE operacoes
+        SET finops_status = ?, finops_id = COALESCE(?, finops_id), finops_erro = ?,
+            finops_tentativa_em = NOW()
+      WHERE id = ? AND estado = 'DEFINIDA'`,
+    [status, finopsId, erro, id],
   );
   return resultado.affectedRows === 1;
 }
@@ -120,6 +155,7 @@ export async function listar({ pagina, tamanho, estado }) {
     identificador: l.identificador,
     estado: l.estado,
     definicao: montaDefinicao(l),
+    finops: montaFinops(l),
     cliente: { tipoPessoa: l.tipo_pessoa, documento: l.documento },
     modalidade: l.modalidade_codigo,   // a API chama de "modalidade" (contrato da T-08)
     valor: l.valor,

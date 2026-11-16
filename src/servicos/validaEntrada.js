@@ -2,8 +2,13 @@ import * as repositorioModalidades from '../repositorios/modalidades.js';
 import { ErroDeNegocio } from '../lib/erros.js';
 import { ehDataValida } from '../lib/datas.js';
 import { validaCliente } from '../lib/documento.js';
+import { arredonda2 } from '../lib/util.js';
 
-const IDENTIFICADOR_MAX = 60; // mesmo tamanho da coluna operacoes.identificador (VARCHAR(60))
+// Identificador da operação na esteira (T-13): o FinOps usa ele como `numeroOperacao`, exige o
+// formato OP-AAAA-NNNN (4 dígitos ou mais na sequência; ADR-009 deles) e a coluna lá é VARCHAR(20).
+// A nossa coluna é VARCHAR(60), mas um identificador que o FinOps recusa só daria erro na definição.
+const FORMATO_IDENTIFICADOR = /^OP-\d{4}-\d{4,}$/;
+const IDENTIFICADOR_MAX = 20;
 const VALOR_MAXIMO = 10_000_000;
 const SCORE_MIN = 0;
 const SCORE_MAX = 1000;
@@ -44,22 +49,27 @@ export async function validaEntrada(body, repositorio = repositorioModalidades) 
 
   const erros = [];
 
-  // identificador: string, 1 a 60 caracteres (a unicidade é checada na rota, contra o banco)
-  if (typeof identificador !== 'string' || identificador.trim().length === 0) {
-    erros.push('identificador é obrigatório (texto de 1 a 60 caracteres)');
-  } else if (identificador.length > IDENTIFICADOR_MAX) {
-    erros.push(`identificador deve ter no máximo ${IDENTIFICADOR_MAX} caracteres`);
+  // identificador: OP-AAAA-NNNN, até 20 caracteres (a unicidade é checada na rota, contra o banco).
+  // Espaços nas pontas são tolerados e removidos; maiúsculas são exigidas (é como fica gravado lá).
+  const identificadorLimpo = typeof identificador === 'string' ? identificador.trim() : '';
+  if (!FORMATO_IDENTIFICADOR.test(identificadorLimpo) || identificadorLimpo.length > IDENTIFICADOR_MAX) {
+    erros.push(
+      `identificador é obrigatório no formato OP-AAAA-NNNN (ex.: OP-2026-0001), com até ${IDENTIFICADOR_MAX} caracteres`,
+    );
   }
 
   // cliente: { tipoPessoa, documento } — uma mensagem se ausente, uma por campo se inválido
   const resultadoCliente = validaCliente(cliente);
   erros.push(...resultadoCliente.erros);
 
-  // valor: número finito, > 0 e <= 10.000.000
+  // valor: número finito, > 0, <= 10.000.000 e sem fração de centavo (o FinOps recusa 3 casas, e o
+  // encadeamento do saldo devedor no cronograma só fecha ao centavo se o principal já estiver em centavos)
   if (typeof valor !== 'number' || !Number.isFinite(valor) || valor <= 0) {
     erros.push('valor deve ser um número maior que zero');
   } else if (valor > VALOR_MAXIMO) {
     erros.push(`valor deve ser no máximo ${VALOR_MAXIMO}`);
+  } else if (arredonda2(valor) !== valor) {
+    erros.push('valor deve ter no máximo 2 casas decimais');
   }
 
   // modalidade: string que exista (e esteja ativa) na tabela modalidades
@@ -109,7 +119,7 @@ export async function validaEntrada(body, repositorio = repositorioModalidades) 
   }
 
   return {
-    identificador: identificador.trim(),
+    identificador: identificadorLimpo,
     cliente: resultadoCliente.cliente,
     valor,
     modalidade: modalidadeBanco,

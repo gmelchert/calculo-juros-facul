@@ -3,12 +3,16 @@
 //
 // Depois de rodar, confere se a tabela `operacoes` está na versão atual. O CREATE TABLE IF NOT
 // EXISTS não altera uma tabela que já existe, então um banco criado antes de 08/10/2026 continua
-// sem as colunas de cliente e de definição — e a API quebraria com "Unknown column". Nesse caso
-// o script avisa e pede para rodar "npm run reset" (apaga o banco e recria do zero).
+// sem as colunas de cliente e de definição, e um criado antes de 15/11/2026 continua sem as colunas
+// finops_* — e a API quebraria com "Unknown column". Nesse caso o script avisa e pede para rodar
+// "npm run reset" (apaga o banco e recria do zero).
 import { abreConexao, leArquivoSql, mostraErro } from './scriptSql.js';
 
-// Colunas de `operacoes` que só existem na versão 2 do schema (D-06).
-const COLUNAS_V2_OPERACOES = ['tipo_pessoa', 'documento', 'estado', 'sistema_definido', 'definido_em'];
+// Colunas de `operacoes` acrescentadas depois da versão 1: versão 2 (D-06) e versão 3 (T-13, FinOps).
+const COLUNAS_NOVAS_OPERACOES = [
+    'tipo_pessoa', 'documento', 'estado', 'sistema_definido', 'definido_em',
+    'finops_status', 'finops_id', 'finops_erro', 'finops_tentativa_em',
+];
 
 export async function colunasFaltandoEmOperacoes(conexao) {
     // DATABASE() é o banco escolhido pelo USE do schema.sql nesta mesma conexão.
@@ -18,7 +22,7 @@ export async function colunasFaltandoEmOperacoes(conexao) {
           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'operacoes'`,
     );
     const existentes = new Set(linhas.map((l) => l.coluna));
-    return COLUNAS_V2_OPERACOES.filter((coluna) => !existentes.has(coluna));
+    return COLUNAS_NOVAS_OPERACOES.filter((coluna) => !existentes.has(coluna));
 }
 
 async function rodaSchema() {

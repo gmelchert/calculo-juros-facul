@@ -47,8 +47,10 @@ CREATE TABLE IF NOT EXISTS faixas_juros (
 
 -- 3) operacoes: cada operação simulada pela API (POST /api/operacoes).
 --    Versão 2 (08/10/2026, D-06): cliente (tipo_pessoa + documento) e definição do sistema de
---    amortização (estado, sistema_definido, definido_em). Este CREATE só vale para banco novo:
---    em banco antigo o IF NOT EXISTS pula, e o db/schema.js avisa para rodar "npm run reset".
+--    amortização (estado, sistema_definido, definido_em).
+--    Versão 3 (15/11/2026, T-13): situação do registro no FinOps (finops_*).
+--    Este CREATE só vale para banco novo: em banco antigo o IF NOT EXISTS pula, e o db/schema.js
+--    avisa para rodar "npm run reset".
 CREATE TABLE IF NOT EXISTS operacoes (
   id                      INT UNSIGNED      NOT NULL AUTO_INCREMENT,
   identificador           VARCHAR(60)       NOT NULL,
@@ -68,6 +70,11 @@ CREATE TABLE IF NOT EXISTS operacoes (
   estado                  VARCHAR(10)       NOT NULL DEFAULT 'SIMULADA',   -- 'SIMULADA' | 'DEFINIDA'
   sistema_definido        VARCHAR(5)        NULL,                          -- 'PRICE' | 'SAC' quando DEFINIDA
   definido_em             DATETIME          NULL,                          -- quando foi definida
+  -- Versão 3 (15/11/2026, T-13): registro da operação DEFINIDA no FinOps (financial-operations-service).
+  finops_status           VARCHAR(10)       NULL,                          -- 'PENDENTE' | 'REGISTRADA' | 'FALHOU' quando DEFINIDA
+  finops_id               BIGINT UNSIGNED   NULL,                          -- id da operação lá (o numeroOperacao é o identificador)
+  finops_erro             VARCHAR(255)      NULL,                          -- motivo da última falha
+  finops_tentativa_em     DATETIME          NULL,                          -- última tentativa de envio
   criado_em               DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
   PRIMARY KEY (id),
@@ -84,5 +91,9 @@ CREATE TABLE IF NOT EXISTS operacoes (
   CONSTRAINT ck_operacoes_estado CHECK (estado IN ('SIMULADA', 'DEFINIDA')),
   CONSTRAINT ck_operacoes_definicao CHECK (
     (estado = 'SIMULADA' AND sistema_definido IS NULL AND definido_em IS NULL) OR
-    (estado = 'DEFINIDA' AND sistema_definido IN ('PRICE', 'SAC') AND definido_em IS NOT NULL))
+    (estado = 'DEFINIDA' AND sistema_definido IN ('PRICE', 'SAC') AND definido_em IS NOT NULL)),
+  CONSTRAINT ck_operacoes_finops CHECK (
+    (estado = 'SIMULADA' AND finops_status IS NULL AND finops_id IS NULL
+       AND finops_erro IS NULL AND finops_tentativa_em IS NULL) OR
+    (estado = 'DEFINIDA' AND finops_status IN ('PENDENTE', 'REGISTRADA', 'FALHOU')))
 );

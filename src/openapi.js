@@ -62,6 +62,7 @@ const EXEMPLO_OPERACAO = {
   criadoEm: '2026-10-08 14:03:22',
   estado: 'SIMULADA',
   definicao: null,
+  finops: null,
   ...simulaOperacao(
     { ...EXEMPLO_PEDIDO, modalidade: { codigo: EXEMPLO_PEDIDO.modalidade }, cliente: EXEMPLO_CLIENTE },
     EXEMPLO_TAXA,
@@ -70,10 +71,18 @@ const EXEMPLO_OPERACAO = {
 
 const EXEMPLO_DEFINICAO = { sistema: 'PRICE', definidoEm: '2026-10-08 15:12:40' };
 
+// Situação do registro no FinOps logo depois da definição: enviada e aceita (T-13).
+const EXEMPLO_FINOPS = { status: 'REGISTRADA', id: 1, erro: null, tentativaEm: '2026-10-08 15:12:41' };
+const EXEMPLO_FINOPS_FALHOU = {
+  status: 'FALHOU', id: null, tentativaEm: '2026-10-08 15:12:41',
+  erro: 'sem resposta do FinOps em http://localhost:8083/operacoes (ECONNREFUSED: connect ECONNREFUSED 127.0.0.1:8083)',
+};
+
 const EXEMPLO_OPERACAO_DEFINIDA = {
   ...EXEMPLO_OPERACAO,
   estado: 'DEFINIDA',
   definicao: EXEMPLO_DEFINICAO,
+  finops: EXEMPLO_FINOPS,
 };
 
 const EXEMPLO_CONSOLIDADO = montaConsolidado(EXEMPLO_OPERACAO_DEFINIDA, EXEMPLO_MODALIDADE);
@@ -91,6 +100,7 @@ const EXEMPLO_RESUMO = {
   identificador: 'OP-2026-0001',
   estado: 'DEFINIDA',
   definicao: EXEMPLO_DEFINICAO,
+  finops: EXEMPLO_FINOPS,
   cliente: EXEMPLO_CLIENTE,
   modalidade: 'CONSIGNADO_INSS',
   valor: 10000,
@@ -144,7 +154,7 @@ export const openapi = {
   openapi: '3.0.3',
   info: {
     title: 'API de Simulação de Crédito',
-    version: '1.1.0',
+    version: '1.2.0',
     description: `
 API acadêmica que recebe um pedido de crédito (cliente, valor, modalidade, score, prazo) e devolve
 a simulação completa: parcelas pelos sistemas **Price** e **SAC** com datas reais de vencimento,
@@ -155,6 +165,15 @@ Depois da simulação, **outro grupo escolhe o sistema de amortização** (\`POS
 a operação passa de \`SIMULADA\` para \`DEFINIDA\` e a escolha não muda mais. A **equipe de contrato**
 lê então o **consolidado** (\`GET /operacoes/{id}/consolidado\` ou por identificador): um único
 documento com cliente, produto, taxa, encargos, CET, demonstrativo e o calendário do sistema escolhido.
+
+### Integração com o FinOps (financial-operations-service)
+Toda operação **DEFINIDA** é enviada, na hora da definição, ao serviço de operações financeiras da
+esteira (\`POST {FINOPS_URL}/operacoes\`, porta 8083), que registra o contrato e passa a controlar
+parcelas e pagamentos. O payload é **exatamente o consolidado**. O resultado fica em \`operacao.finops\`:
+\`REGISTRADA\` (com o \`id\` de lá), \`FALHOU\` (com o \`erro\`) ou \`PENDENTE\` (ainda não enviada).
+A definição vale mesmo se o envio falhar: o FinOps é idempotente pelo identificador e o reenvio é
+\`POST /operacoes/{id}/finops\`. Por causa dele, o \`identificador\` precisa estar no formato
+\`OP-AAAA-NNNN\` (até 20 caracteres) e o \`valor\` não pode ter fração de centavo.
 
 ### Convenções
 - **Taxas em porcentagem**: \`1.85\` significa 1,85% ao mês (efetiva, capitalização composta).
@@ -183,6 +202,7 @@ Sem autenticação e sem limite de requisições: projeto acadêmico.
     { name: 'Modalidades', description: 'Catálogo das modalidades de crédito e suas taxas por faixa de score' },
     { name: 'Operações', description: 'Simular, gravar e consultar operações de crédito' },
     { name: 'Definição e contrato', description: 'Escolha do sistema de amortização (outro grupo) e consolidado para a equipe de contrato' },
+    { name: 'FinOps', description: 'Registro da operação definida no financial-operations-service (serviço Go da esteira, porta 8083)' },
     { name: 'Juros (legado)', description: 'Rotas do esqueleto inicial do projeto. Mantidas por compatibilidade; não use em código novo.' },
   ],
 
@@ -244,6 +264,10 @@ como ficou gravada, em estado \`SIMULADA\`.
 O \`cliente\` é obrigatório: \`tipoPessoa\` PF ou PJ e \`documento\` CPF (PF) ou CNPJ (PJ) válido.
 PJ paga IOF adicional de 0,95% (PF: 0,38%); parcelas e cronograma não mudam.
 
+O \`identificador\` é o número da operação em toda a esteira: formato \`OP-AAAA-NNNN\` (4 dígitos ou
+mais na sequência), até 20 caracteres, maiúsculo — é o que o FinOps aceita como \`numeroOperacao\`.
+O \`valor\` precisa estar em centavos (até 2 casas decimais).
+
 Operações recusadas (422) **não** são gravadas.
 `.trim(),
         operationId: 'criarOperacao',
@@ -254,8 +278,9 @@ Operações recusadas (422) **não** são gravadas.
         responses: {
           201: respostaJson('Operação simulada e gravada', ref('Operacao'), EXEMPLO_OPERACAO),
           400: respostaErro('Corpo inválido — `detalhes` lista cada problema', 'DADOS_INVALIDOS', 'Há campos inválidos na requisição', [
+            'identificador é obrigatório no formato OP-AAAA-NNNN (ex.: OP-2026-0001), com até 20 caracteres',
             'cliente.documento deve ser um CPF válido (11 dígitos)',
-            'valor deve ser um número maior que zero',
+            'valor deve ter no máximo 2 casas decimais',
             'prazoMeses deve estar entre 6 e 84 para CONSIGNADO_INSS',
           ]),
           409: respostaErro('Já existe operação com esse identificador', 'IDENTIFICADOR_DUPLICADO', 'Já existe operação com identificador "OP-2026-0001"'),
@@ -309,6 +334,11 @@ sistema escolhido e a data/hora, e devolve a operação completa. O calendário 
 A definição é **única e imutável**: uma segunda chamada, com qualquer sistema, responde 409.
 Para mudar de ideia, crie outra operação (outro identificador). Se duas definições chegarem ao
 mesmo tempo, só uma vence; a outra recebe o mesmo 409.
+
+**Registro no FinOps:** logo depois de gravar a definição, o consolidado é enviado ao
+financial-operations-service. A resposta é sempre 200 com a operação; olhe \`finops.status\`:
+\`REGISTRADA\` (e \`finops.id\`), \`FALHOU\` (com \`finops.erro\` — reenvie com
+\`POST /operacoes/{id}/finops\`) ou \`PENDENTE\` (integração desligada, \`FINOPS_URL\` vazia).
 `.trim(),
         operationId: 'definirSistema',
         parameters: [parametroId],
@@ -317,11 +347,40 @@ mesmo tempo, só uma vence; a outra recebe o mesmo 409.
           content: { 'application/json': { schema: ref('NovaDefinicao'), example: { sistema: 'PRICE' } } },
         },
         responses: {
-          200: respostaJson('Operação definida', ref('Operacao'), EXEMPLO_OPERACAO_DEFINIDA),
+          200: respostaJson('Operação definida (veja `finops.status` para saber se o FinOps a registrou)', ref('Operacao'), EXEMPLO_OPERACAO_DEFINIDA),
           400: respostaErro('`id` inválido, ou `sistema` fora de PRICE/SAC', 'DADOS_INVALIDOS', 'Há campos inválidos na requisição', ['sistema deve ser PRICE ou SAC']),
           404: ERRO_404,
           409: respostaErro('A operação já foi definida (a mensagem diz com qual sistema)', 'AMORTIZACAO_JA_DEFINIDA', 'Operação 1 já está definida como PRICE'),
           500: ERRO_500,
+        },
+      },
+    },
+
+    '/operacoes/{id}/finops': {
+      post: {
+        tags: ['FinOps'],
+        summary: 'Reenvia uma operação definida ao FinOps',
+        description: `
+Para quando o envio automático feito na definição **falhou** (\`finops.status\` = \`FALHOU\`: FinOps fora
+do ar, timeout, payload recusado) ou **não aconteceu** (\`PENDENTE\`: a API estava com \`FINOPS_URL\` vazia,
+ou caiu entre a definição e o envio). Monta o consolidado de novo e faz \`POST {FINOPS_URL}/operacoes\`.
+
+É seguro chamar quantas vezes for preciso: o FinOps é idempotente pelo \`identificador\` (responde 200
+se já tinha a operação). Uma operação já \`REGISTRADA\` é devolvida como está, sem nova chamada.
+
+Sucesso devolve a operação completa com \`finops.status\` = \`REGISTRADA\`. Falha grava \`FALHOU\` com o
+motivo e responde **503** (FinOps não respondeu: tente de novo depois) ou **502** (FinOps recusou o
+payload: não adianta reenviar igual; \`detalhes\` traz a mensagem deles).
+`.trim(),
+        operationId: 'reenviarFinops',
+        parameters: [parametroId],
+        responses: {
+          200: respostaJson('Operação registrada no FinOps (agora ou antes)', ref('Operacao'), EXEMPLO_OPERACAO_DEFINIDA),
+          400: ERRO_ID,
+          404: ERRO_404,
+          422: ERRO_NAO_DEFINIDA,
+          502: respostaErro('O FinOps recusou o payload (resposta 4xx/5xx deles); a operação fica FALHOU', 'FINOPS_RECUSOU', 'O FinOps recusou a operação; veja o motivo em detalhes', ['FinOps respondeu 400: operacao.identificador deve estar no formato OP-AAAA-NNNN']),
+          503: respostaErro('FinOps sem resposta (conexão recusada, timeout) ou integração desligada (FINOPS_URL vazia)', 'FINOPS_INDISPONIVEL', 'O FinOps não respondeu; a operação continua FALHOU e pode ser reenviada', [EXEMPLO_FINOPS_FALHOU.erro]),
         },
       },
     },
@@ -357,8 +416,8 @@ recalculado na leitura.
         operationId: 'consolidadoPorIdentificador',
         parameters: [{
           name: 'identificador', in: 'path', required: true,
-          description: 'Identificador da operação, URL-encoded',
-          schema: { type: 'string', minLength: 1, maxLength: 60, example: 'OP-2026-0001' },
+          description: 'Identificador da operação (OP-AAAA-NNNN), URL-encoded',
+          schema: { type: 'string', minLength: 1, maxLength: 20, example: 'OP-2026-0001' },
         }],
         responses: {
           200: respostaJson('Consolidado da operação', ref('Consolidado'), EXEMPLO_CONSOLIDADO),
@@ -442,7 +501,8 @@ recalculado na leitura.
                 enum: [
                   'DADOS_INVALIDOS', 'MODALIDADE_NAO_ENCONTRADA', 'OPERACAO_NAO_ENCONTRADA',
                   'IDENTIFICADOR_DUPLICADO', 'SCORE_INSUFICIENTE', 'CET_NAO_CONVERGE',
-                  'AMORTIZACAO_JA_DEFINIDA', 'OPERACAO_NAO_DEFINIDA', 'ERRO_INTERNO',
+                  'AMORTIZACAO_JA_DEFINIDA', 'OPERACAO_NAO_DEFINIDA',
+                  'FINOPS_INDISPONIVEL', 'FINOPS_RECUSOU', 'ERRO_INTERNO',
                 ],
               },
               mensagem: { type: 'string', example: 'Há campos inválidos na requisição' },
@@ -534,9 +594,13 @@ recalculado na leitura.
         description: 'Corpo do POST /operacoes.',
         required: ['identificador', 'cliente', 'valor', 'modalidade', 'score', 'prazoMeses'],
         properties: {
-          identificador: { type: 'string', minLength: 1, maxLength: 60, description: 'Identificação do pedido, única na base (sem diferenciar maiúsculas)', example: 'OP-2026-0001' },
+          identificador: {
+            type: 'string', pattern: '^OP-\\d{4}-\\d{4,}$', maxLength: 20,
+            description: 'Número da operação na esteira, único na base: OP-AAAA-NNNN (4 dígitos ou mais na sequência), maiúsculo, até 20 caracteres. É o `numeroOperacao` no FinOps.',
+            example: 'OP-2026-0001',
+          },
           cliente: ref('Cliente'),
-          valor: { type: 'number', exclusiveMinimum: true, minimum: 0, maximum: 10000000, description: 'Valor solicitado (R$)', example: 10000 },
+          valor: { type: 'number', exclusiveMinimum: true, minimum: 0, maximum: 10000000, multipleOf: 0.01, description: 'Valor solicitado (R$), em centavos: até 2 casas decimais', example: 10000 },
           modalidade: { type: 'string', description: 'Código de uma modalidade ativa (GET /modalidades)', example: 'CONSIGNADO_INSS' },
           score: { type: 'integer', minimum: 0, maximum: 1000, description: 'Score do cliente; 0–199 (faixa E) é recusado', example: 650 },
           prazoMeses: { type: 'integer', minimum: 1, description: 'Deve estar entre prazoMinMeses e prazoMaxMeses da modalidade', example: 12 },
@@ -666,7 +730,21 @@ recalculado na leitura.
         description: 'Escolha do sistema de amortização. `null` enquanto a operação está SIMULADA.',
         properties: {
           sistema: { type: 'string', enum: ['PRICE', 'SAC'], example: 'PRICE' },
-          definidoEm: { type: 'string', description: 'Data/hora da definição (AAAA-MM-DD HH:MM:SS, horário do servidor de banco)', example: '2026-10-08 15:12:40' },
+          definidoEm: { type: 'string', description: 'Data/hora da definição (AAAA-MM-DD HH:MM:SS em GMT-03:00, o fuso da sessão MySQL — DB_TIMEZONE). É o `definidoEm` que o FinOps recebe.', example: '2026-10-08 15:12:40' },
+        },
+      },
+
+      Finops: {
+        type: 'object',
+        description: 'Situação do registro da operação no FinOps (financial-operations-service). `null` enquanto a operação está SIMULADA: só operação DEFINIDA vira contrato lá.',
+        properties: {
+          status: {
+            type: 'string', enum: ['PENDENTE', 'REGISTRADA', 'FALHOU'], example: 'REGISTRADA',
+            description: 'PENDENTE = ainda não enviada (FINOPS_URL vazia, ou a API caiu antes de enviar). REGISTRADA = aceita pelo FinOps (definitivo). FALHOU = a última tentativa falhou; veja `erro` e reenvie com POST /operacoes/{id}/finops.',
+          },
+          id: { type: 'integer', nullable: true, description: 'Id da operação no FinOps quando REGISTRADA. O `numeroOperacao` lá é o nosso `identificador`.', example: 1 },
+          erro: { type: 'string', nullable: true, description: 'Motivo da última falha (mensagem do FinOps ou da rede); null quando REGISTRADA.', example: null },
+          tentativaEm: { type: 'string', nullable: true, description: 'Data/hora da última tentativa de envio (AAAA-MM-DD HH:MM:SS, GMT-03:00); null enquanto PENDENTE.', example: '2026-10-08 15:12:41' },
         },
       },
 
@@ -681,13 +759,14 @@ recalculado na leitura.
 
       Operacao: {
         type: 'object',
-        description: 'Operação completa, como gravada. É a resposta do POST, do GET /operacoes/{id} e do POST /operacoes/{id}/definicao. Traz sempre as duas simulações; `estado` e `definicao` dizem qual vale.',
+        description: 'Operação completa, como gravada. É a resposta do POST, do GET /operacoes/{id}, do POST /operacoes/{id}/definicao e do POST /operacoes/{id}/finops. Traz sempre as duas simulações; `estado` e `definicao` dizem qual vale; `finops` diz se o contrato já está registrado no FinOps.',
         properties: {
           id: { type: 'integer', example: 1 },
           identificador: { type: 'string', example: 'OP-2026-0001' },
-          criadoEm: { type: 'string', description: 'Data/hora da gravação (AAAA-MM-DD HH:MM:SS, horário do servidor de banco)', example: '2026-10-08 14:03:22' },
+          criadoEm: { type: 'string', description: 'Data/hora da gravação (AAAA-MM-DD HH:MM:SS em GMT-03:00, o fuso da sessão MySQL — DB_TIMEZONE)', example: '2026-10-08 14:03:22' },
           estado: { type: 'string', enum: ['SIMULADA', 'DEFINIDA'], description: 'SIMULADA ao nascer; DEFINIDA depois da escolha do sistema', example: 'SIMULADA' },
           definicao: { ...ref('Definicao'), nullable: true },
+          finops: { ...ref('Finops'), nullable: true },
           cliente: ref('Cliente'),
           entrada: ref('Entrada'),
           taxa: ref('Taxa'),
@@ -706,6 +785,7 @@ recalculado na leitura.
           identificador: { type: 'string', example: 'OP-2026-0001' },
           estado: { type: 'string', enum: ['SIMULADA', 'DEFINIDA'], example: 'DEFINIDA' },
           definicao: { ...ref('Definicao'), nullable: true },
+          finops: { ...ref('Finops'), nullable: true },
           cliente: ref('Cliente'),
           modalidade: { type: 'string', example: 'CONSIGNADO_INSS' },
           valor: { type: 'number', example: 10000 },

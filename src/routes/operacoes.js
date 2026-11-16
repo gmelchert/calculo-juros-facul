@@ -5,6 +5,7 @@ import { calculaTaxa } from '../servicos/taxa.js';
 import { simulaOperacao } from '../servicos/simulacao.js';
 import { avaliaDefinicao, erroJaDefinida, ESTADOS } from '../servicos/definicao.js';
 import { montaConsolidado } from '../servicos/consolidado.js';
+import { registraOperacaoDefinida } from '../servicos/finops.js';
 import * as repositorio from '../repositorios/operacoes.js';
 import * as repositorioModalidades from '../repositorios/modalidades.js';
 import { ErroDeNegocio } from '../lib/erros.js';
@@ -27,15 +28,19 @@ function leId(valor) {
   return id;
 }
 
+// Existe, mas ainda não escolheram o sistema: erro próprio, diferente do 404.
+function erroNaoDefinida(operacao) {
+  return new ErroDeNegocio(
+    422,
+    'OPERACAO_NAO_DEFINIDA',
+    `Operação ${operacao.id} ainda não tem sistema de amortização definido`,
+  );
+}
+
 // Consolidado (T-11): mesma resposta para as duas rotas (por id e por identificador).
 async function respondeConsolidado(operacao, res) {
-  // Existe, mas ainda não escolheram o sistema: erro próprio, diferente do 404.
   if (operacao.estado !== 'DEFINIDA') {
-    throw new ErroDeNegocio(
-      422,
-      'OPERACAO_NAO_DEFINIDA',
-      `Operação ${operacao.id} ainda não tem sistema de amortização definido`,
-    );
+    throw erroNaoDefinida(operacao);
   }
   // Só para o nome e a modalidade BCB — a FK garante que a modalidade existe.
   const modalidade = await repositorioModalidades.buscarModalidade(operacao.entrada.modalidade);
@@ -161,7 +166,52 @@ router.post('/:id/definicao', async (req, res) => {
     throw erroJaDefinida(await repositorio.buscarPorId(id));
   }
 
-  // 4. Relê para devolver a operação completa já DEFINIDA (estado, definicao, simulacoes).
+  // 4. Operação DEFINIDA é contrato: envia o consolidado ao FinOps (T-13). O resultado fica em
+  //    `finops` (REGISTRADA ou FALHOU com o motivo). A definição vale mesmo se o envio falhar —
+  //    o FinOps é idempotente e o reenvio é POST /:id/finops. Com FINOPS_URL vazia, fica PENDENTE.
+  await registraOperacaoDefinida(await repositorio.buscarPorId(id));
+
+  // 5. Relê para devolver a operação completa já DEFINIDA (estado, definicao, finops, simulacoes).
+  res.json(await repositorio.buscarPorId(id));
+});
+
+// POST /api/operacoes/:id/finops — (re)envia uma operação DEFINIDA ao FinOps (T-13).
+// Para quando o envio automático da definição falhou (finops.status FALHOU) ou não aconteceu (PENDENTE).
+router.post('/:id/finops', async (req, res) => {
+  const id = leId(req.params.id);
+  const operacao = await repositorio.buscarPorId(id);
+  if (!operacao) {
+    throw new ErroDeNegocio(404, 'OPERACAO_NAO_ENCONTRADA', `Operação ${id} não encontrada`);
+  }
+  if (operacao.estado !== 'DEFINIDA') {
+    throw erroNaoDefinida(operacao);
+  }
+
+  // Já registrada é definitivo: não há o que reenviar (e evita trocar um REGISTRADA por uma falha
+  // de rede passageira). Devolve a operação como está.
+  if (operacao.finops.status === 'REGISTRADA') {
+    return res.json(operacao);
+  }
+
+  const resultado = await registraOperacaoDefinida(operacao);
+
+  // Mesma orientação que o FinOps dá a quem integra: sem resposta → tente de novo (503);
+  // recusado → não reenvie igual, corrija o que `detalhes` aponta (502).
+  if (resultado.tipo === 'DESLIGADO') {
+    throw new ErroDeNegocio(503, 'FINOPS_INDISPONIVEL', 'Integração com o FinOps desligada: configure FINOPS_URL');
+  }
+  if (resultado.status !== 'REGISTRADA') {
+    const comunicacao = resultado.tipo === 'COMUNICACAO';
+    throw new ErroDeNegocio(
+      comunicacao ? 503 : 502,
+      comunicacao ? 'FINOPS_INDISPONIVEL' : 'FINOPS_RECUSOU',
+      comunicacao
+        ? 'O FinOps não respondeu; a operação continua FALHOU e pode ser reenviada'
+        : 'O FinOps recusou a operação; veja o motivo em detalhes',
+      [resultado.erro],
+    );
+  }
+
   res.json(await repositorio.buscarPorId(id));
 });
 

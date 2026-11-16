@@ -22,10 +22,12 @@ test('OpenAPI: todos os endpoints da API estão documentados (e nenhum a mais)',
     '/operacoes/{id}',
     '/operacoes/{id}/consolidado',
     '/operacoes/{id}/definicao',
+    '/operacoes/{id}/finops',
   ]);
   assert.deepEqual(Object.keys(openapi.paths['/operacoes']).sort(), ['get', 'post']);
   assert.deepEqual(Object.keys(openapi.paths['/operacoes/{id}/definicao']), ['post']);
   assert.deepEqual(Object.keys(openapi.paths['/operacoes/{id}/consolidado']), ['get']);
+  assert.deepEqual(Object.keys(openapi.paths['/operacoes/{id}/finops']), ['post']);
 });
 
 test('OpenAPI: toda $ref aponta para um schema que existe', () => {
@@ -51,14 +53,34 @@ test('OpenAPI: o exemplo da operação é calculado pelo código e bate com o ce
   assert.deepEqual(exemplo.cliente, { tipoPessoa: 'PF', documento: '52998224725' });
   assert.equal(exemplo.estado, 'SIMULADA');
   assert.equal(exemplo.definicao, null);
+  assert.equal(exemplo.finops, null); // T-13: só DEFINIDA tem registro no FinOps
   assert.equal('cliente' in exemplo.entrada, false);
 });
 
-test('OpenAPI: o exemplo da definição é a mesma operação em estado DEFINIDA', () => {
+test('OpenAPI: o exemplo da definição é a mesma operação em estado DEFINIDA, já REGISTRADA no FinOps', () => {
   const exemplo = openapi.paths['/operacoes/{id}/definicao'].post.responses[200].content['application/json'].example;
   assert.equal(exemplo.estado, 'DEFINIDA');
   assert.deepEqual(exemplo.definicao, { sistema: 'PRICE', definidoEm: '2026-10-08 15:12:40' });
+  assert.equal(exemplo.finops.status, 'REGISTRADA');
+  assert.equal(typeof exemplo.finops.id, 'number');
   assert.equal(exemplo.simulacoes.PRICE.cronograma.length, 12);
+});
+
+test('OpenAPI: o reenvio ao FinOps devolve a mesma operação e documenta os erros 503 e 502 (T-13)', () => {
+  const rota = openapi.paths['/operacoes/{id}/finops'].post;
+  assert.deepEqual(Object.keys(rota.responses).sort(), ['200', '400', '404', '422', '502', '503']);
+  assert.equal(rota.responses[200].content['application/json'].example.finops.status, 'REGISTRADA');
+  assert.equal(rota.responses[503].content['application/json'].example.erro.codigo, 'FINOPS_INDISPONIVEL');
+  assert.equal(rota.responses[502].content['application/json'].example.erro.codigo, 'FINOPS_RECUSOU');
+  // o schema Finops lista os três estados
+  assert.deepEqual(openapi.components.schemas.Finops.properties.status.enum, ['PENDENTE', 'REGISTRADA', 'FALHOU']);
+});
+
+test('OpenAPI: o pedido documenta o formato do identificador e os centavos do valor exigidos pelo FinOps', () => {
+  const pedido = openapi.components.schemas.NovaOperacao.properties;
+  assert.equal(pedido.identificador.pattern, '^OP-\\d{4}-\\d{4,}$');
+  assert.equal(pedido.identificador.maxLength, 20);
+  assert.equal(pedido.valor.multipleOf, 0.01);
 });
 
 test('OpenAPI: o exemplo do consolidado é calculado pelo código (montaConsolidado) e só tem o sistema escolhido', () => {
@@ -80,6 +102,8 @@ test('OpenAPI: os códigos de erro do schema Erro são os do Anexo B do backlog'
     'CET_NAO_CONVERGE',
     'DADOS_INVALIDOS',
     'ERRO_INTERNO',
+    'FINOPS_INDISPONIVEL',
+    'FINOPS_RECUSOU',
     'IDENTIFICADOR_DUPLICADO',
     'MODALIDADE_NAO_ENCONTRADA',
     'OPERACAO_NAO_DEFINIDA',

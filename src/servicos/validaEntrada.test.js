@@ -170,6 +170,16 @@ test('validaEntrada: limites de valor (0, negativo, > 10 milhões, string)', asy
   assert.match((await capturaErro(corpoValido({ valor: 10_000_000.01 }))).detalhes[0], /máximo/);
 });
 
+test('validaEntrada: valor aceita centavos mas recusa fração de centavo (o FinOps recusa 3 casas) — T-13', async () => {
+  assert.equal((await valida(corpoValido({ valor: 1234.56 }))).valor, 1234.56);
+  assert.equal((await valida(corpoValido({ valor: 0.07 }))).valor, 0.07); // 0.07 * 100 não é inteiro em ponto flutuante
+  for (const valor of [10000.001, 1234.567, 0.005]) {
+    const erro = await capturaErro(corpoValido({ valor }));
+    assert.equal(erro.detalhes.length, 1, `valor ${valor}`);
+    assert.equal(erro.detalhes[0], 'valor deve ter no máximo 2 casas decimais');
+  }
+});
+
 test('validaEntrada: score precisa ser inteiro entre 0 e 1000 (0 e 1000 valem)', async () => {
   assert.equal((await valida(corpoValido({ score: 0 }))).score, 0);
   assert.equal((await valida(corpoValido({ score: 1000 }))).score, 1000);
@@ -180,11 +190,22 @@ test('validaEntrada: score precisa ser inteiro entre 0 e 1000 (0 e 1000 valem)',
   }
 });
 
-test('validaEntrada: identificador com 60 caracteres passa, com 61 não; espaços nas pontas são removidos', async () => {
-  assert.equal((await valida(corpoValido({ identificador: 'A'.repeat(60) }))).identificador.length, 60);
-  assert.match((await capturaErro(corpoValido({ identificador: 'A'.repeat(61) }))).detalhes[0], /60/);
-  assert.match((await capturaErro(corpoValido({ identificador: '   ' }))).detalhes[0], /identificador/);
-  assert.equal((await valida(corpoValido({ identificador: '  OP-1  ' }))).identificador, 'OP-1');
+test('validaEntrada: identificador no formato OP-AAAA-NNNN da esteira (T-13); espaços nas pontas são removidos', async () => {
+  // formato do FinOps: OP-, 4 dígitos, -, 4 dígitos ou mais — até 20 caracteres no total (coluna deles)
+  for (const identificador of ['OP-2026-0001', 'OP-2026-123456', 'OP-9999-123456789012']) {
+    assert.equal((await valida(corpoValido({ identificador }))).identificador, identificador);
+  }
+  assert.equal((await valida(corpoValido({ identificador: '  OP-2026-0001  ' }))).identificador, 'OP-2026-0001');
+
+  const recusados = [
+    '', '   ', 'OP-1', 'op-2026-0001', 'OP-2026-001', 'OP-26-0001', 'OP-2026-0001-A', 'OP 2026 0001',
+    'OP-2026-000 1', 'A'.repeat(60), 'OP-9999-1234567890123' /* 21 chars */, 123, null, undefined,
+  ];
+  for (const identificador of recusados) {
+    const erro = await capturaErro(corpoValido({ identificador }));
+    assert.equal(erro.detalhes.length, 1, `identificador ${JSON.stringify(identificador)}`);
+    assert.match(erro.detalhes[0], /^identificador .*OP-AAAA-NNNN.*20 caracteres$/);
+  }
 });
 
 test('validaEntrada: primeiroRelacionamento true é preservado; null conta como ausente', async () => {
