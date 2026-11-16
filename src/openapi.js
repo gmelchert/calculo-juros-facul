@@ -339,6 +339,11 @@ mesmo tempo, só uma vence; a outra recebe o mesmo 409.
 financial-operations-service. A resposta é sempre 200 com a operação; olhe \`finops.status\`:
 \`REGISTRADA\` (e \`finops.id\`), \`FALHOU\` (com \`finops.erro\` — reenvie com
 \`POST /operacoes/{id}/finops\`) ou \`PENDENTE\` (integração desligada, \`FINOPS_URL\` vazia).
+
+Depois de gravar, a operação definida (este mesmo JSON de resposta) é enviada por POST para as
+APIs dos outros grupos configuradas no \`.env\`: FinOps (\`FINOPS_URL\`) e Esteira de Documentos
+(\`DOCUMENTOS_URL\` → \`/api/documentos/juros\`). Uma falha nesses envios **não** muda a resposta:
+a definição já está gravada, e o erro só aparece no terminal da API.
 `.trim(),
         operationId: 'definirSistema',
         parameters: [parametroId],

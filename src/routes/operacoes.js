@@ -8,7 +8,9 @@ import { montaConsolidado } from '../servicos/consolidado.js';
 import { registraOperacaoDefinida } from '../servicos/finops.js';
 import * as repositorio from '../repositorios/operacoes.js';
 import * as repositorioModalidades from '../repositorios/modalidades.js';
+
 import { ErroDeNegocio } from '../lib/erros.js';
+import { notificaDefinicao } from '../servicos/integracoes.js';
 
 const router = Router();
 
@@ -166,53 +168,14 @@ router.post('/:id/definicao', async (req, res) => {
     throw erroJaDefinida(await repositorio.buscarPorId(id));
   }
 
-  // 4. Operação DEFINIDA é contrato: envia o consolidado ao FinOps (T-13). O resultado fica em
-  //    `finops` (REGISTRADA ou FALHOU com o motivo). A definição vale mesmo se o envio falhar —
-  //    o FinOps é idempotente e o reenvio é POST /:id/finops. Com FINOPS_URL vazia, fica PENDENTE.
-  await registraOperacaoDefinida(await repositorio.buscarPorId(id));
+  // 4. Relê para devolver a operação completa já DEFINIDA (estado, definicao, simulacoes).
+  const definida = await repositorio.buscarPorId(id);
 
-  // 5. Relê para devolver a operação completa já DEFINIDA (estado, definicao, finops, simulacoes).
-  res.json(await repositorio.buscarPorId(id));
-});
+  // 5. Manda a operação definida para FinOps e Documentos. Nunca lança erro: a definição já está
+  //    gravada, então falha de outro grupo só aparece no terminal (ver servicos/integracoes.js).
+  await notificaDefinicao(definida);
 
-// POST /api/operacoes/:id/finops — (re)envia uma operação DEFINIDA ao FinOps (T-13).
-// Para quando o envio automático da definição falhou (finops.status FALHOU) ou não aconteceu (PENDENTE).
-router.post('/:id/finops', async (req, res) => {
-  const id = leId(req.params.id);
-  const operacao = await repositorio.buscarPorId(id);
-  if (!operacao) {
-    throw new ErroDeNegocio(404, 'OPERACAO_NAO_ENCONTRADA', `Operação ${id} não encontrada`);
-  }
-  if (operacao.estado !== 'DEFINIDA') {
-    throw erroNaoDefinida(operacao);
-  }
-
-  // Já registrada é definitivo: não há o que reenviar (e evita trocar um REGISTRADA por uma falha
-  // de rede passageira). Devolve a operação como está.
-  if (operacao.finops.status === 'REGISTRADA') {
-    return res.json(operacao);
-  }
-
-  const resultado = await registraOperacaoDefinida(operacao);
-
-  // Mesma orientação que o FinOps dá a quem integra: sem resposta → tente de novo (503);
-  // recusado → não reenvie igual, corrija o que `detalhes` aponta (502).
-  if (resultado.tipo === 'DESLIGADO') {
-    throw new ErroDeNegocio(503, 'FINOPS_INDISPONIVEL', 'Integração com o FinOps desligada: configure FINOPS_URL');
-  }
-  if (resultado.status !== 'REGISTRADA') {
-    const comunicacao = resultado.tipo === 'COMUNICACAO';
-    throw new ErroDeNegocio(
-      comunicacao ? 503 : 502,
-      comunicacao ? 'FINOPS_INDISPONIVEL' : 'FINOPS_RECUSOU',
-      comunicacao
-        ? 'O FinOps não respondeu; a operação continua FALHOU e pode ser reenviada'
-        : 'O FinOps recusou a operação; veja o motivo em detalhes',
-      [resultado.erro],
-    );
-  }
-
-  res.json(await repositorio.buscarPorId(id));
+  res.json(definida);
 });
 
 // GET /api/operacoes/:id — operação completa, mesmo formato da resposta do POST (T-08)
