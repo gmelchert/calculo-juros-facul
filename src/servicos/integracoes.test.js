@@ -4,7 +4,12 @@ import assert from 'node:assert/strict';
 import { notificaDefinicao } from './integracoes.js';
 
 // Operação mínima: o serviço não olha o conteúdo, só repassa. Usamos o identificador nos logs.
-const OPERACAO = { id: 1, identificador: 'OP-TESTE', estado: 'DEFINIDA', definicao: { sistema: 'PRICE' } };
+const OPERACAO = { id: 1, identificador: 'OP-2026-0001', estado: 'DEFINIDA', definicao: { sistema: 'PRICE' } };
+
+// FinOps ligado sem tocar no process.env: o envio de verdade é o `registraFinops` injetado
+// (registraOperacaoDefinida, que tem os seus próprios testes em finops.test.js).
+const FINOPS_LIGADO = { url: 'http://localhost:8083', timeoutMs: 5000, habilitado: true };
+const REGISTRADA = { status: 'REGISTRADA', id: 42, erro: null, tipo: 'CRIADA' };
 
 function respostaJson(status, corpo) {
   return new Response(JSON.stringify(corpo), { status, headers: { 'Content-Type': 'application/json' } });
@@ -21,8 +26,12 @@ afterEach(() => mock.restoreAll());
 
 test('sem URL no .env não chama ninguém', async () => {
   const fetch = mock.method(globalThis, 'fetch', async () => respostaJson(201, {}));
-  assert.deepEqual(await notificaDefinicao(OPERACAO), []);
+  const registraFinops = mock.fn(async () => REGISTRADA);
+
+  assert.deepEqual(await notificaDefinicao(OPERACAO, { registraFinops }), []);
+
   assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(registraFinops.mock.callCount(), 0);
 });
 
 test('Documentos: POST do JSON da operação em /api/documentos/juros', async () => {
@@ -39,18 +48,45 @@ test('Documentos: POST do JSON da operação em /api/documentos/juros', async ()
   assert.deepEqual(JSON.parse(opcoes.body), OPERACAO); // vai o texto JSON, não um arquivo
 });
 
-test('FinOps e Documentos configurados: envia para os dois', async () => {
-  process.env.FINOPS_URL = 'http://localhost:8083';
-  process.env.DOCUMENTOS_URL = 'http://127.0.0.1:8000';
-  const fetch = mock.method(globalThis, 'fetch', async () => respostaJson(201, {}));
+test('FinOps: vai pelo registraOperacaoDefinida (consolidado + finops_*), nunca pelo JSON cru da operação', async () => {
+  // Se alguém voltar a mandar a operação crua por fetch, o FinOps responde 400
+  // "operacao.identificador não pode ser vazio" — aqui isso vira falha de teste.
+  const fetch = mock.method(globalThis, 'fetch', async () => { throw new Error('o FinOps não pode receber a operação crua'); });
+  const registraFinops = mock.fn(async () => REGISTRADA);
 
-  const r = await notificaDefinicao(OPERACAO);
+  const r = await notificaDefinicao(OPERACAO, { finops: FINOPS_LIGADO, registraFinops });
+
+  assert.deepEqual(r, [{ destino: 'FinOps', ok: true, resposta: { id: 42, status: 'REGISTRADA', tipo: 'CRIADA' } }]);
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(registraFinops.mock.callCount(), 1);
+  const [operacao, deps] = registraFinops.mock.calls[0].arguments;
+  assert.equal(operacao, OPERACAO);
+  assert.equal(deps.config, FINOPS_LIGADO); // a mesma configuração que decidiu enviar
+});
+
+test('FinOps e Documentos configurados: envia para os dois, cada um no seu formato', async () => {
+  process.env.DOCUMENTOS_URL = 'http://127.0.0.1:8000';
+  const fetch = mock.method(globalThis, 'fetch', async () => respostaJson(201, { documento_id: 'abc' }));
+  const registraFinops = mock.fn(async () => REGISTRADA);
+
+  const r = await notificaDefinicao(OPERACAO, { finops: FINOPS_LIGADO, registraFinops });
 
   assert.deepEqual(r.map((x) => [x.destino, x.ok]), [['FinOps', true], ['Documentos', true]]);
-  assert.deepEqual(fetch.mock.calls.map((c) => c.arguments[0]).sort(), [
-    'http://127.0.0.1:8000/api/documentos/juros',
-    'http://localhost:8083/operacoes',
-  ]);
+  assert.deepEqual(fetch.mock.calls.map((c) => c.arguments[0]), ['http://127.0.0.1:8000/api/documentos/juros']);
+  assert.equal(registraFinops.mock.callCount(), 1);
+});
+
+test('FinOps recusou ou não respondeu (registraOperacaoDefinida devolve FALHOU, sem lançar) → ok:false com o motivo', async () => {
+  const registraFinops = async () => ({
+    status: 'FALHOU', id: null, tipo: 'RECUSADO',
+    erro: 'FinOps respondeu 400: operacao.identificador não pode ser vazio',
+  });
+
+  const [r] = await notificaDefinicao(OPERACAO, { finops: FINOPS_LIGADO, registraFinops });
+
+  assert.equal(r.destino, 'FinOps');
+  assert.equal(r.ok, false);
+  assert.match(r.erro, /respondeu 400/);
 });
 
 test('resposta 400 do outro grupo vira ok:false com a mensagem, sem lançar erro', async () => {
@@ -65,14 +101,19 @@ test('resposta 400 do outro grupo vira ok:false com a mensagem, sem lançar erro
 });
 
 test('API do outro grupo fora do ar: não lança erro e um destino não atrapalha o outro', async () => {
-  process.env.FINOPS_URL = 'http://localhost:8083';
   process.env.DOCUMENTOS_URL = 'http://127.0.0.1:8000';
-  mock.method(globalThis, 'fetch', async (url) => {
-    if (url.includes('8083')) throw new TypeError('fetch failed'); // o que o Node lança sem conexão
-    return respostaJson(201, { documento_id: 'abc' });
-  });
+  mock.method(globalThis, 'fetch', async () => { throw new TypeError('fetch failed'); }); // o que o Node lança sem conexão
+  const registraFinops = async () => REGISTRADA;
 
-  const r = await notificaDefinicao(OPERACAO);
+  const r = await notificaDefinicao(OPERACAO, { finops: FINOPS_LIGADO, registraFinops });
 
-  assert.deepEqual(r.map((x) => [x.destino, x.ok]), [['FinOps', false], ['Documentos', true]]);
+  assert.deepEqual(r.map((x) => [x.destino, x.ok]), [['FinOps', true], ['Documentos', false]]);
+});
+
+test('bug ou banco fora dentro do envio ao FinOps também não derruba a resposta: vira ok:false no log', async () => {
+  const registraFinops = async () => { throw new TypeError('Cannot read properties of undefined'); };
+
+  const [r] = await notificaDefinicao(OPERACAO, { finops: FINOPS_LIGADO, registraFinops });
+
+  assert.deepEqual(r, { destino: 'FinOps', ok: false, erro: 'Cannot read properties of undefined' });
 });

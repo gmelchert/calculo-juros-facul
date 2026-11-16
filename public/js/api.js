@@ -11,7 +11,7 @@ const Api = {
   //  - painel servido pelo Express (http://localhost:3000/)  → '/api', mesma origem
   //  - arquivo aberto com duplo clique (file:///.../index.html) → localhost:3000
   // O segundo caso funciona porque a API libera CORS para qualquer origem (src/app.js).
-  base: location.protocol === 'file:' ? 'http://localhost:3000/api' : '/api',
+  base: location.protocol === 'file:' ? 'http://localhost:5000/api' : '/api',
 
   // Faz a requisição e devolve o JSON já convertido em objeto.
   // Erro vira SEMPRE um `Error` com mensagem em português pronta para a tela.

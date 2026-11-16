@@ -104,15 +104,15 @@ router.post('/', async (req, res) => {
     throw err;
   }
 
-  // 7. Relê do banco para devolver exatamente o que ficou gravado (com id, criadoEm, estado).
-  const operacao = await repositorio.buscarPorId(id);
+  // 7. A operação nasceu DEFINIDA, então os outros grupos são avisados agora, no mesmo request — o
+  //    mesmo envio que a rota /definicao faz (servicos/integracoes.js): o FinOps recebe o consolidado
+  //    e o resultado fica em operacoes.finops_*; Documentos recebe a operação completa. Nunca lança
+  //    erro: a operação já está gravada, e falha de outro grupo só aparece no terminal e em `finops`.
+  await notificaDefinicao(await repositorio.buscarPorId(id));
 
-  // 8. A operação nasceu DEFINIDA, então os outros grupos já podem ser avisados agora — o mesmo
-  //    envio que a rota /definicao faz. Nunca lança erro: a operação já está gravada, e falha de
-  //    outro grupo só aparece no terminal (ver servicos/integracoes.js).
-  await notificaDefinicao(operacao);
-
-  res.status(201).json(operacao);
+  // 8. Relê para devolver exatamente o que ficou gravado (id, criadoEm, estado) já com `finops`:
+  //    REGISTRADA, FALHOU (reenvio: POST /:id/finops) ou PENDENTE (FINOPS_URL vazia).
+  res.status(201).json(await repositorio.buscarPorId(id));
 });
 
 // GET /api/operacoes?pagina=&tamanho=&estado= — listagem paginada, mais recentes primeiro (T-08; T-12: estado)
@@ -195,14 +195,53 @@ router.post('/:id/definicao', async (req, res) => {
     throw erroJaDefinida(await repositorio.buscarPorId(id));
   }
 
-  // 4. Relê para devolver a operação completa já DEFINIDA (estado, definicao, simulacoes).
-  const definida = await repositorio.buscarPorId(id);
+  // 4. Manda a operação definida para FinOps (consolidado; resultado em `finops`) e Documentos
+  //    (operação completa). Nunca lança erro: a definição já está gravada, então falha de outro
+  //    grupo só aparece no terminal e em `finops` (ver servicos/integracoes.js).
+  await notificaDefinicao(await repositorio.buscarPorId(id));
 
-  // 5. Manda a operação definida para FinOps e Documentos. Nunca lança erro: a definição já está
-  //    gravada, então falha de outro grupo só aparece no terminal (ver servicos/integracoes.js).
-  await notificaDefinicao(definida);
+  // 5. Relê para devolver a operação completa já DEFINIDA (estado, definicao, finops, simulacoes).
+  res.json(await repositorio.buscarPorId(id));
+});
 
-  res.json(definida);
+// POST /api/operacoes/:id/finops — (re)envia uma operação DEFINIDA ao FinOps (T-13).
+// Para quando o envio automático da definição falhou (finops.status FALHOU) ou não aconteceu (PENDENTE).
+router.post('/:id/finops', async (req, res) => {
+  const id = leId(req.params.id);
+  const operacao = await repositorio.buscarPorId(id);
+  if (!operacao) {
+    throw new ErroDeNegocio(404, 'OPERACAO_NAO_ENCONTRADA', `Operação ${id} não encontrada`);
+  }
+  if (operacao.estado !== 'DEFINIDA') {
+    throw erroNaoDefinida(operacao);
+  }
+
+  // Já registrada é definitivo: não há o que reenviar (e evita trocar um REGISTRADA por uma falha
+  // de rede passageira). Devolve a operação como está.
+  if (operacao.finops.status === 'REGISTRADA') {
+    return res.json(operacao);
+  }
+
+  const resultado = await registraOperacaoDefinida(operacao);
+
+  // Mesma orientação que o FinOps dá a quem integra: sem resposta → tente de novo (503);
+  // recusado → não reenvie igual, corrija o que `detalhes` aponta (502).
+  if (resultado.tipo === 'DESLIGADO') {
+    throw new ErroDeNegocio(503, 'FINOPS_INDISPONIVEL', 'Integração com o FinOps desligada: configure FINOPS_URL');
+  }
+  if (resultado.status !== 'REGISTRADA') {
+    const comunicacao = resultado.tipo === 'COMUNICACAO';
+    throw new ErroDeNegocio(
+      comunicacao ? 503 : 502,
+      comunicacao ? 'FINOPS_INDISPONIVEL' : 'FINOPS_RECUSOU',
+      comunicacao
+        ? 'O FinOps não respondeu; a operação continua FALHOU e pode ser reenviada'
+        : 'O FinOps recusou a operação; veja o motivo em detalhes',
+      [resultado.erro],
+    );
+  }
+
+  res.json(await repositorio.buscarPorId(id));
 });
 
 // GET /api/operacoes/:id — operação completa, mesmo formato da resposta do POST (T-08)

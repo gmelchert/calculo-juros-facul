@@ -49,13 +49,13 @@ test('OpenAPI: o exemplo da operação é calculado pelo código e bate com o ce
   assert.equal(exemplo.simulacoes.SAC.cet.anualPercentual, 30.96);
   assert.equal(exemplo.simulacoes.PRICE.cronograma.length, 12);
   assert.equal(exemplo.entrada.modalidade, 'CONSIGNADO_INSS');
-  // T-09: cliente só com dígitos. T-14: nasce DEFINIDA, com o FinOps ainda PENDENTE.
+  // T-09: cliente só com dígitos. T-14: nasce DEFINIDA; T-13: o FinOps já respondeu quando sai o 201.
   assert.deepEqual(exemplo.cliente, { tipoPessoa: 'PF', documento: '52998224725' });
   assert.equal(exemplo.estado, 'DEFINIDA');
   assert.equal(exemplo.definicao.sistema, 'PRICE');
   assert.equal(exemplo.definicao.definidoEm, exemplo.criadoEm); // definida no mesmo POST
-  assert.equal(exemplo.finops.status, 'PENDENTE');
-  assert.equal(exemplo.finops.id, null);
+  assert.equal(exemplo.finops.status, 'REGISTRADA');
+  assert.equal(exemplo.finops.tentativaEm, exemplo.criadoEm); // enviada no mesmo request
   assert.equal('cliente' in exemplo.entrada, false);
   // T-14: auditoria do grupo de decisão volta junto com a operação
   assert.equal(exemplo.decisao, 'APROVADO');

@@ -75,7 +75,7 @@ Confira: `http://localhost:3000/api/health` deve responder `{"status":"ok","banc
 | `DB_TIMEZONE` | não (padrão `-03:00`) | fuso da sessão MySQL, afeta `NOW()` em `definido_em` |
 | `PORT` | não (padrão `3000`) | porta HTTP |
 | `DOCUMENTOS_URL` | não | API do grupo 6. **Vazia = não envia nada, em silêncio** |
-| `FINOPS_URL` | não | API do grupo financeiro. **Vazia = não envia nada, em silêncio** |
+| `FINOPS_URL` | não | API do grupo financeiro. **Vazia = não envia**; as operações ficam com `finops.status = PENDENTE` (o `index.js` avisa na subida) |
 | `FINOPS_TIMEOUT_MS` | não | timeout do FinOps |
 
 > **Armadilha nº 1 do projeto**: variável de integração vazia não é erro nem aviso — o código
@@ -243,15 +243,22 @@ as colunas, faça o *backfill* das linhas existentes e só então crie o `CHECK`
 
 ## 7. Integrações com os outros grupos
 
-`src/servicos/integracoes.js` → `notificaDefinicao(operacao)` manda a **operação completa** (o mesmo
-JSON do `GET /api/operacoes/:id`) para os destinos configurados:
+`src/servicos/integracoes.js` → `notificaDefinicao(operacao)` avisa os destinos configurados, **cada um
+no formato do seu contrato** — não existe "um JSON para todos":
 
-| Grupo | Variável | Endpoint | Resposta |
-|---|---|---|---|
-| FinOps (Go) | `FINOPS_URL` | `POST {url}/operacoes` | confirmação com id deles |
-| Documentos (Python/FastAPI) | `DOCUMENTOS_URL` | `POST {url}/api/documentos/juros` | `201` + `documento_id` e `url_pdf` |
+| Grupo | Variável | O que recebe | Endpoint | Resposta |
+|---|---|---|---|---|
+| FinOps (Go) | `FINOPS_URL` | o **consolidado** (`GET /api/operacoes/:id/consolidado`), via `servicos/finops.js` → `registraOperacaoDefinida` | `POST {url}/operacoes` | `201`/`200` com o id deles → `finops.status = REGISTRADA`; `400`/sem resposta → `FALHOU`. Fica em `operacoes.finops_*`; reenvio: `POST /api/operacoes/:id/finops` |
+| Documentos (Python/FastAPI) | `DOCUMENTOS_URL` | a **operação completa** (o mesmo JSON do `GET /api/operacoes/:id`) | `POST {url}/api/documentos/juros` | `201` + `documento_id` e `url_pdf` |
 
-É chamado em dois lugares: `routes/operacoes.js:113` (o POST novo) e `:203` (a `/definicao` legada).
+É chamado em dois lugares de `routes/operacoes.js`: no `POST /api/operacoes` (T-14, a operação já nasce
+DEFINIDA) e na `/definicao` legada. As duas rotas releem a operação depois do envio, então a resposta
+já traz o `finops` atualizado. O contrato do FinOps em detalhe está em `docs/integracao-finops.md`.
+
+> **Armadilha nº 2**: mandar a operação completa ao FinOps dá `400 operacao.identificador não pode
+> ser vazio` — lá o identificador é lido em `operacao.identificador`, e na operação completa ele está
+> na raiz. Foi exatamente a regressão do merge `394a2e6` (§9). O FinOps só pode ser chamado via
+> `servicos/finops.js`; `integracoes.test.js` falha se alguém voltar a usar `fetch` cru para ele.
 
 Sobre o grupo de Documentos: o JSON Schema deles **não** usa `additionalProperties: false`, então
 campos novos que acrescentarmos (como `finops` ou `contextoScore`) passam sem quebrar. Não altere o
@@ -294,24 +301,25 @@ Hoje: **61/63**. As duas falhas são a rota `/finops` ausente (§9), não regres
 Leia esta seção antes de abrir qualquer PR — evita "consertar" o que é decisão, e evita achar que
 quebrou o que já estava quebrado.
 
-### Regressão do merge `394a2e6` (pendente de decisão)
+### Regressão do merge `394a2e6` (corrigida em 16/11/2026)
 
 O merge de 16/11/2026 resolveu `src/routes/operacoes.js` ficando com a versão de "documentos"
-inteira, e isso descartou o lado FinOps:
+inteira, e isso descartou o lado FinOps: a rota `POST /api/operacoes/:id/finops` sumiu (`404`),
+`registraOperacaoDefinida` ficou importado sem uso, `finops_status` nunca saía de `PENDENTE` e o
+FinOps passou a receber a **operação completa** em vez do consolidado. O sintoma apareceu no mesmo dia,
+na primeira operação real (`OP-2026-000123`): `FinOps respondeu 400: operacao.identificador não pode
+ser vazio`.
 
-- `POST /api/operacoes/:id/finops` **não existe mais** → `404`. Continua no Swagger e na mensagem de
-  subida do `index.js`.
-- `registraOperacaoDefinida` segue **importado e nunca chamado** (`routes/operacoes.js:10`). O import
-  morto foi **deixado de propósito**, para a regressão não ficar invisível.
-- Consequência: `finops_status` **nunca sai de `PENDENTE`**, mesmo quando o FinOps aceita com `201`.
-  As ~285 linhas de `finops.test.js` testam código que nenhuma rota chama.
-- O payload mudou sem ninguém decidir: `notificaDefinicao` manda a **operação completa**, mas
-  `servicos/finops.js` documenta que o contrato deles é o **consolidado**.
+Decisão tomada — a segunda das duas opções que estavam pendentes, porque é a que bate com o contrato
+real deles (o serviço Go não pode ser alterado por nós):
 
-A decisão pendente é: FinOps passa pelo `notificaDefinicao` genérico (e então removem-se `finops.js`,
-a rota de reenvio, as colunas `finops_*` e o trecho do Swagger) **ou** volta pelo
-`registraOperacaoDefinida` (e `notificaDefinicao` fica só com Documentos). Pelos comentários do
-`finops.js`, a segunda combina com o contrato real deles.
+- o FinOps volta a passar por `registraOperacaoDefinida` (consolidado + `finops_*`), chamado por
+  `notificaDefinicao`; Documentos continua recebendo a operação completa (§7);
+- `POST /api/operacoes` e `/definicao` releem a operação depois do envio: a resposta traz o `finops` real;
+- a rota de reenvio `POST /api/operacoes/:id/finops` voltou, igual à da T-13;
+- `npm run verifica` confere o registro no FinOps também para as operações criadas pelo POST.
+
+Registro completo (causa, evidência, prevenção): `docs/mistakes/2026-11-16-finops-payload-errado.md`.
 
 ### Decisões que parecem bug e não são
 
@@ -375,7 +383,7 @@ a rota de reenvio, as colunas `finops_*` e o trecho do Swagger) **ou** volta pel
 | `modalidade "X" não existe` em modalidade conhecida | falta `npm run seed` |
 | `faixas_juros não cobre o score N` (erro 500) | seed incompleto |
 | Integração "não faz nada", sem erro | `DOCUMENTOS_URL`/`FINOPS_URL` vazias no `.env` (§2) |
-| `POST /api/operacoes/:id/finops` → 404 | esperado hoje (§9) |
-| `npm run verifica` em 61/63 | esperado hoje (§9) |
+| `FinOps respondeu 400: operacao.identificador não pode ser vazio` | o FinOps recebeu a operação completa em vez do consolidado; ele só pode ser chamado via `servicos/finops.js` (§7, §9) |
+| `finops.status` fica `PENDENTE` com `FINOPS_URL` preenchida | a rota não chamou `notificaDefinicao` depois de gravar; reenvie com `POST /api/operacoes/:id/finops` e confira `routes/operacoes.js` |
 | `400` no payload do grupo de decisão | confira o CPF/CNPJ: os dígitos verificadores são validados de verdade |
 | `npm test` quebrando em vários arquivos de uma vez | provavelmente um *fixture* compartilhado de entrada; confira se `validaEntrada` passou a exigir campo novo |

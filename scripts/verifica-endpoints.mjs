@@ -32,6 +32,24 @@ console.log(finops.habilitado
   ? `FinOps em ${finops.url}: ${finopsOnline ? 'NO AR — cenários conferem o registro lá' : 'FORA DO AR — cenários conferem a falha'}`
   : 'FinOps: FINOPS_URL vazia — cenários conferem o PENDENTE');
 
+// T-13: o que se espera de `finops` logo depois de uma definição — no próprio POST (T-14) ou na
+// /definicao legada — conforme o ambiente. O envio acontece no mesmo request e a resposta já o traz.
+const statusFinopsEsperado = !finops.habilitado ? 'PENDENTE' : finopsOnline ? 'REGISTRADA' : 'FALHOU';
+function confereFinopsAposDefinicao(f) {
+  assert.ok(f, 'finops ausente na operação DEFINIDA');
+  assert.equal(f.status, statusFinopsEsperado, JSON.stringify(f));
+  if (statusFinopsEsperado === 'REGISTRADA') {
+    assert.ok(Number.isInteger(f.id) && f.id >= 1, `finops.id=${f.id}`);
+    assert.equal(f.erro, null);
+    assert.match(String(f.tentativaEm), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  } else if (statusFinopsEsperado === 'FALHOU') {
+    assert.equal(f.id, null);
+    assert.match(f.erro, /sem resposta do FinOps/);
+  } else {
+    assert.deepEqual(f, { status: 'PENDENTE', id: null, erro: null, tentativaEm: null });
+  }
+}
+
 function registra(nome, ok, info = '') {
   resultados.push({ nome, ok, info });
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${nome}${info ? '  → ' + info : ''}`);
@@ -177,8 +195,8 @@ await cenario('POST feliz (A.5, PF) → 201 já DEFINIDA em PRICE, com valores d
   assert.equal(criada.estado, 'DEFINIDA');
   assert.equal(criada.definicao.sistema, 'PRICE');
   assert.match(String(criada.definicao.definidoEm), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
-  // O registro no FinOps nasce PENDENTE: o envio é feito depois de gravar e não muda o 201.
-  assert.deepEqual(criada.finops, { status: 'PENDENTE', id: null, erro: null, tentativaEm: null });
+  // T-13: o consolidado vai ao FinOps no mesmo request e a resposta já traz o resultado em `finops`.
+  confereFinopsAposDefinicao(criada.finops);
   // T-14: auditoria do grupo de decisão volta como veio
   assert.equal(criada.decisao, 'APROVADO');
   assert.equal(criada.probabilidadeDefault, 0.0412);
@@ -214,8 +232,9 @@ await cenario('linha gravada no banco com colunas planas corretas (inclusive cli
     [corpoA5.identificador],
   );
   assert.ok(l, 'linha não encontrada');
-  assert.equal(l.finops_status, 'PENDENTE'); // T-14: DEFINIDA desde o INSERT → CHECK exige status
-  assert.equal(l.finops_id, null);
+  // T-14: DEFINIDA desde o INSERT → o CHECK exige um status; T-13 o atualiza no mesmo request.
+  assert.equal(l.finops_status, criada.finops.status);
+  assert.equal(l.finops_id, criada.finops.id);
   assert.equal(l.tipo_pessoa, 'PF');
   assert.equal(l.documento, '52998224725');
   assert.equal(l.modalidade_codigo, 'CONSIGNADO_INSS');
@@ -445,10 +464,10 @@ await cenario('GET /operacoes → 200 paginado, mais recente primeiro, só resum
     'cetPriceAno', 'cetSacAno', 'cliente', 'criadoEm', 'dataLiberacao', 'definicao', 'estado', 'faixaRisco',
     'finops', 'id', 'identificador', 'modalidade', 'prazoMeses', 'score', 'taxaFinalMes', 'valor',
   ]);
-  // T-14: toda operação nova já aparece DEFINIDA na listagem, com o FinOps PENDENTE.
+  // T-14: toda operação nova já aparece DEFINIDA na listagem, com o resultado do envio ao FinOps.
   assert.equal(primeiro.estado, 'DEFINIDA');
   assert.equal(primeiro.definicao.sistema, 'PRICE');
-  assert.equal(primeiro.finops.status, 'PENDENTE');
+  assert.equal(primeiro.finops.status, statusFinopsEsperado);
   assert.deepEqual(primeiro.cliente, { tipoPessoa: 'PF', documento: '52998224725' });
   return `total=${total}`;
 });
@@ -618,23 +637,6 @@ await cenario('POST /99999999/definicao → 404; /abc/definicao → 400', async 
   assert.equal(b.status, 400);
 });
 
-// T-13: o que se espera de `finops` logo depois de uma definição, conforme o ambiente.
-const statusFinopsEsperado = !finops.habilitado ? 'PENDENTE' : finopsOnline ? 'REGISTRADA' : 'FALHOU';
-function confereFinopsAposDefinicao(f) {
-  assert.ok(f, 'finops ausente na operação DEFINIDA');
-  assert.equal(f.status, statusFinopsEsperado, JSON.stringify(f));
-  if (statusFinopsEsperado === 'REGISTRADA') {
-    assert.ok(Number.isInteger(f.id) && f.id >= 1, `finops.id=${f.id}`);
-    assert.equal(f.erro, null);
-    assert.match(String(f.tentativaEm), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
-  } else if (statusFinopsEsperado === 'FALHOU') {
-    assert.equal(f.id, null);
-    assert.match(f.erro, /sem resposta do FinOps/);
-  } else {
-    assert.deepEqual(f, { status: 'PENDENTE', id: null, erro: null, tentativaEm: null });
-  }
-}
-
 let definida;
 await cenario(`POST /:id/definicao {sistema: "PRICE"} numa SIMULADA legado → 200 DEFINIDA com definicao, cronograma intacto e finops ${statusFinopsEsperado}`, async () => {
   const r = await chama('POST', `/operacoes/${idSimuladaLegado}/definicao`, { sistema: 'PRICE' });
@@ -710,7 +712,7 @@ if (finopsOnline) {
     const r = await fetch(`${finops.url}/operacoes/${criada.identificador}`);
     assert.equal(r.status, 200);
     const op = await r.json();
-    assert.equal(op.id, definida.finops.id);
+    assert.equal(op.id, criada.finops.id);
     assert.equal(op.numeroOperacao, criada.identificador);
     assert.equal(op.clienteId, '52998224725');
     assert.equal(op.tipoPessoa, 'PF');
@@ -731,7 +733,7 @@ if (finopsOnline) {
     assert.equal(op.valorLiberado, 9744.35);
     assert.deepEqual(op.cet, { mensal: 0.0227, anual: 0.3089 });
     // definidoEm sem fuso foi lido como GMT-03:00 e sai em UTC: +3h
-    const nosso = new Date(`${definida.definicao.definidoEm.replace(' ', 'T')}-03:00`).toISOString().replace('.000Z', 'Z');
+    const nosso = new Date(`${criada.definicao.definidoEm.replace(' ', 'T')}-03:00`).toISOString().replace('.000Z', 'Z');
     assert.equal(op.definidoEm, nosso);
     return `finops id=${op.id} status=${op.status} definidoEm=${op.definidoEm}`;
   });
@@ -770,7 +772,7 @@ if (finopsOnline) {
   await cenario('POST /:id/finops em operação já REGISTRADA → 200 com a operação como está (não chama o FinOps de novo)', async () => {
     const r = await chama('POST', `/operacoes/${criada.id}/finops`);
     assert.equal(r.status, 200, JSON.stringify(r.json));
-    assert.deepEqual(r.json, definida);
+    assert.deepEqual(r.json, criada);
   });
 
   await cenario('reenvio: marcando a PJ como FALHOU no banco, POST /:id/finops volta a REGISTRADA (FinOps responde 200: já existia)', async () => {
@@ -915,9 +917,9 @@ await cenario('GET /?estado=DEFINIDA → só definidas (PF e PJ), total respeita
   const itemPj = r.json.itens.find((i) => i.id === pj.id);
   assert.equal(itemPj.definicao.sistema, 'SAC');
   assert.deepEqual(itemPj.cliente, { tipoPessoa: 'PJ', documento: '11222333000181' });
-  // A listagem também mostra o registro no FinOps. Operação criada pelo POST (T-14) nasce
-  // PENDENTE: quem muda esse status é a rota de registro no FinOps, não o POST.
-  assert.equal(itemPj.finops.status, 'PENDENTE');
+  // A listagem também mostra o registro no FinOps: a PJ foi criada pelo POST (T-14), que já envia
+  // o consolidado e grava o resultado (T-13).
+  assert.equal(itemPj.finops.status, statusFinopsEsperado);
   return `definidas=${r.json.total}`;
 });
 

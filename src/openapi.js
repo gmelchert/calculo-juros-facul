@@ -69,9 +69,10 @@ const EXEMPLO_MODALIDADE = {
 const EXEMPLO_DEFINICAO = { sistema: 'PRICE', definidoEm: '2026-10-08 15:12:40' };
 
 // Desde a T-14 a operação nasce DEFINIDA no próprio POST: `definidoEm` é o mesmo instante do
-// `criadoEm`, e o registro no FinOps ainda está PENDENTE no momento em que respondemos 201.
+// `criadoEm`, e o consolidado é enviado ao FinOps antes de respondermos 201 — a resposta já traz o
+// resultado em `finops` (T-13).
 const EXEMPLO_DEFINICAO_NO_POST = { sistema: 'PRICE', definidoEm: '2026-10-08 14:03:22' };
-const EXEMPLO_FINOPS_PENDENTE = { status: 'PENDENTE', id: null, erro: null, tentativaEm: null };
+const EXEMPLO_FINOPS_NO_POST = { status: 'REGISTRADA', id: 1, erro: null, tentativaEm: '2026-10-08 14:03:22' };
 
 const EXEMPLO_OPERACAO = {
   id: 1,
@@ -79,7 +80,7 @@ const EXEMPLO_OPERACAO = {
   criadoEm: '2026-10-08 14:03:22',
   estado: 'DEFINIDA',
   definicao: EXEMPLO_DEFINICAO_NO_POST,
-  finops: EXEMPLO_FINOPS_PENDENTE,
+  finops: EXEMPLO_FINOPS_NO_POST,
   ...simulaOperacao(
     { ...EXEMPLO_PEDIDO, modalidade: { codigo: EXEMPLO_PEDIDO.modalidade }, cliente: EXEMPLO_CLIENTE },
     EXEMPLO_TAXA,
@@ -301,8 +302,12 @@ devolvemos junto com a operação. Nada deles entra na conta — a taxa continua
 (\`EXCELENTE\`, \`BOM\`...) é a escala do grupo de decisão e **não** é a nossa \`taxa.faixaRisco\`
 (\`A\` a \`D\`), que é a faixa de score usada para achar a taxa.
 
-A resposta sai com \`finops.status = PENDENTE\`: o envio ao FinOps acontece logo depois de gravar e
-nunca derruba o 201. Operações recusadas (422) **não** são gravadas.
+**Registro no FinOps e Documentos:** logo depois de gravar, o consolidado é enviado ao
+financial-operations-service (\`FINOPS_URL\`) e a operação completa à Esteira de Documentos
+(\`DOCUMENTOS_URL\`), se configurados. Nenhuma falha nesses envios derruba o 201: a resposta já traz o
+resultado em \`finops.status\` — \`REGISTRADA\` (e \`finops.id\`), \`FALHOU\` (com \`finops.erro\`; reenvie
+com \`POST /operacoes/{id}/finops\`) ou \`PENDENTE\` (\`FINOPS_URL\` vazia). Operações recusadas (422)
+**não** são gravadas.
 `.trim(),
         operationId: 'criarOperacao',
         requestBody: {
@@ -384,10 +389,10 @@ financial-operations-service. A resposta é sempre 200 com a operação; olhe \`
 \`REGISTRADA\` (e \`finops.id\`), \`FALHOU\` (com \`finops.erro\` — reenvie com
 \`POST /operacoes/{id}/finops\`) ou \`PENDENTE\` (integração desligada, \`FINOPS_URL\` vazia).
 
-Depois de gravar, a operação definida (este mesmo JSON de resposta) é enviada por POST para as
-APIs dos outros grupos configuradas no \`.env\`: FinOps (\`FINOPS_URL\`) e Esteira de Documentos
-(\`DOCUMENTOS_URL\` → \`/api/documentos/juros\`). Uma falha nesses envios **não** muda a resposta:
-a definição já está gravada, e o erro só aparece no terminal da API.
+**Esteira de Documentos:** depois de gravar, a operação definida (este mesmo JSON de resposta) também
+é enviada por POST para \`DOCUMENTOS_URL\` (\`/api/documentos/juros\`), se configurada. O FinOps **não**
+recebe este JSON, e sim o consolidado (acima): cada grupo tem o seu contrato. Uma falha nesses envios
+**não** muda a resposta: a definição já está gravada, e o erro só aparece no terminal da API.
 `.trim(),
         operationId: 'definirSistema',
         parameters: [parametroId],

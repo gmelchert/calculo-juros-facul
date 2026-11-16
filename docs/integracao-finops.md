@@ -54,10 +54,18 @@ A coluna `operacoes.identificador` continua `VARCHAR(60)`; a regra fica na valid
 
 ### 3.2 Envio automático na definição
 
-`POST /api/operacoes/:id/definicao` grava a definição e, **no mesmo request**, monta o consolidado
+> **Atualização 16/11/2026 (T-14 e correção do merge `394a2e6`).** Desde a T-14 a operação já nasce
+> DEFINIDA no `POST /api/operacoes`, então o envio automático acontece **nas duas rotas** (o POST e a
+> `/definicao` legada), via `src/servicos/integracoes.js` → `notificaDefinicao`, que chama
+> `registraOperacaoDefinida` para o FinOps e manda a operação completa para o grupo de Documentos.
+> O merge do dia 16 tinha trocado isso por um `POST` da operação completa ao FinOps, que responde
+> `400 operacao.identificador não pode ser vazio` (lá o identificador é lido em `operacao.identificador`).
+> Veja `docs/onboarding-tecnico.md` §7 e §9 e `docs/mistakes/2026-11-16-finops-payload-errado.md`.
+
+A rota que define grava a definição e, **no mesmo request**, monta o consolidado
 (`montaConsolidado`, o mesmo documento do `GET .../consolidado`) e faz o `POST` no FinOps
-(`src/servicos/finops.js`). A resposta continua sendo `200` com a operação; o resultado do envio vem em
-`operacao.finops`:
+(`src/servicos/finops.js`). A resposta continua sendo `200` (`201` no POST) com a operação; o resultado
+do envio vem em `operacao.finops`:
 
 | `finops.status` | Significado | O que fazer |
 | --- | --- | --- |
