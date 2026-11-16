@@ -20,6 +20,7 @@ async function cenarioA5(sobrescreve = {}) {
     prazoMeses: 12,
     dataLiberacao: '2026-10-30',
     primeiroRelacionamento: true,
+    amortizacao: 'PRICE', // obrigatória desde a T-14; não muda a simulação (as duas são calculadas)
     ...sobrescreve,
   }, repositorioModalidadesFalso);
   const taxa = await calculaTaxa(entrada.modalidade, entrada.score, repositorioFaixasFalso);

@@ -21,12 +21,22 @@ import { montaConsolidado } from './servicos/consolidado.js';
 const EXEMPLO_PEDIDO = {
   identificador: 'OP-2026-0001',
   cliente: { tipoPessoa: 'PF', documento: '529.982.247-25' },
+  decisao: 'APROVADO',
   valor: 10000,
   modalidade: 'CONSIGNADO_INSS',
   score: 650,
+  probabilidadeDefault: 0.0412,
   prazoMeses: 12,
   dataLiberacao: '2026-10-30',
   primeiroRelacionamento: true,
+  amortizacao: 'PRICE',
+  contextoScore: {
+    scoreFinal: 650,
+    faixaRisco: 'BOM',
+    probabilidadeDefault: 0.0412,
+    modelo: 'SCORE_PF v1.1.0',
+    motivo: 'Score 650 atende ao mínimo para aprovação automática.',
+  },
 };
 
 // Como o cliente fica gravado e é devolvido: documento só com dígitos.
@@ -56,20 +66,29 @@ const EXEMPLO_MODALIDADE = {
   ativo: true,
 };
 
+const EXEMPLO_DEFINICAO = { sistema: 'PRICE', definidoEm: '2026-10-08 15:12:40' };
+
+// Desde a T-14 a operação nasce DEFINIDA no próprio POST: `definidoEm` é o mesmo instante do
+// `criadoEm`, e o registro no FinOps ainda está PENDENTE no momento em que respondemos 201.
+const EXEMPLO_DEFINICAO_NO_POST = { sistema: 'PRICE', definidoEm: '2026-10-08 14:03:22' };
+const EXEMPLO_FINOPS_PENDENTE = { status: 'PENDENTE', id: null, erro: null, tentativaEm: null };
+
 const EXEMPLO_OPERACAO = {
   id: 1,
   identificador: EXEMPLO_PEDIDO.identificador,
   criadoEm: '2026-10-08 14:03:22',
-  estado: 'SIMULADA',
-  definicao: null,
-  finops: null,
+  estado: 'DEFINIDA',
+  definicao: EXEMPLO_DEFINICAO_NO_POST,
+  finops: EXEMPLO_FINOPS_PENDENTE,
   ...simulaOperacao(
     { ...EXEMPLO_PEDIDO, modalidade: { codigo: EXEMPLO_PEDIDO.modalidade }, cliente: EXEMPLO_CLIENTE },
     EXEMPLO_TAXA,
   ),
+  // Auditoria do grupo de decisão, guardada como veio (T-14).
+  decisao: EXEMPLO_PEDIDO.decisao,
+  probabilidadeDefault: EXEMPLO_PEDIDO.probabilidadeDefault,
+  contextoScore: EXEMPLO_PEDIDO.contextoScore,
 };
-
-const EXEMPLO_DEFINICAO = { sistema: 'PRICE', definidoEm: '2026-10-08 15:12:40' };
 
 // Situação do registro no FinOps logo depois da definição: enviada e aceita (T-13).
 const EXEMPLO_FINOPS = { status: 'REGISTRADA', id: 1, erro: null, tentativaEm: '2026-10-08 15:12:41' };
@@ -254,12 +273,20 @@ Sem autenticação e sem limite de requisições: projeto acadêmico.
     '/operacoes': {
       post: {
         tags: ['Operações'],
-        summary: 'Simula e grava uma operação de crédito',
+        summary: 'Cria uma operação de crédito já DEFINIDA',
         description: `
-Fluxo: valida o corpo (todos os problemas de uma vez, inclusive CPF/CNPJ do cliente) → confere se o
-identificador é inédito → descobre a taxa pela modalidade e pelo score (tabela \`faixas_juros\`) →
-simula **Price e SAC** com cronograma, IOF, tarifa, CET e demonstrativo → grava → devolve a operação
-como ficou gravada, em estado \`SIMULADA\`.
+Quem chama é o **grupo de decisão**, que já aprovou o crédito e já escolheu o sistema de
+amortização. Por isso \`amortizacao\` (\`PRICE\` ou \`SAC\`) é **obrigatória** e a operação
+**nasce \`DEFINIDA\`** — não existe mais o passo de definir depois.
+
+Fluxo: valida o corpo (todos os problemas de uma vez, inclusive CPF/CNPJ do cliente e a
+\`amortizacao\`) → recusa se a \`decisao\` não for \`APROVADO\` (422) → confere se o identificador é
+inédito → descobre a taxa pela modalidade e pelo score (tabela \`faixas_juros\`) → simula
+**Price e SAC** com cronograma, IOF, tarifa, CET e demonstrativo → grava \`DEFINIDA\` → avisa os
+outros grupos da esteira (FinOps e Documentos) → devolve a operação como ficou gravada.
+
+As **duas** simulações continuam sendo calculadas e gravadas: \`definicao.sistema\` diz qual vale,
+e o consolidado usa só essa. As duas aparecem no PDF do grupo de Documentos, para comparação.
 
 O \`cliente\` é obrigatório: \`tipoPessoa\` PF ou PJ e \`documento\` CPF (PF) ou CNPJ (PJ) válido.
 PJ paga IOF adicional de 0,95% (PF: 0,38%); parcelas e cronograma não mudam.
@@ -268,7 +295,14 @@ O \`identificador\` é o número da operação em toda a esteira: formato \`OP-A
 mais na sequência), até 20 caracteres, maiúsculo — é o que o FinOps aceita como \`numeroOperacao\`.
 O \`valor\` precisa estar em centavos (até 2 casas decimais).
 
-Operações recusadas (422) **não** são gravadas.
+\`decisao\`, \`probabilidadeDefault\` e \`contextoScore\` são **auditoria**: guardamos como vieram e
+devolvemos junto com a operação. Nada deles entra na conta — a taxa continua saindo de
+\`score\` + \`modalidade\` na tabela \`faixas_juros\`. Atenção: \`contextoScore.faixaRisco\`
+(\`EXCELENTE\`, \`BOM\`...) é a escala do grupo de decisão e **não** é a nossa \`taxa.faixaRisco\`
+(\`A\` a \`D\`), que é a faixa de score usada para achar a taxa.
+
+A resposta sai com \`finops.status = PENDENTE\`: o envio ao FinOps acontece logo depois de gravar e
+nunca derruba o 201. Operações recusadas (422) **não** são gravadas.
 `.trim(),
         operationId: 'criarOperacao',
         requestBody: {
@@ -276,15 +310,20 @@ Operações recusadas (422) **não** são gravadas.
           content: { 'application/json': { schema: ref('NovaOperacao'), example: EXEMPLO_PEDIDO } },
         },
         responses: {
-          201: respostaJson('Operação simulada e gravada', ref('Operacao'), EXEMPLO_OPERACAO),
+          201: respostaJson('Operação simulada e gravada já DEFINIDA', ref('Operacao'), EXEMPLO_OPERACAO),
           400: respostaErro('Corpo inválido — `detalhes` lista cada problema', 'DADOS_INVALIDOS', 'Há campos inválidos na requisição', [
             'identificador é obrigatório no formato OP-AAAA-NNNN (ex.: OP-2026-0001), com até 20 caracteres',
             'cliente.documento deve ser um CPF válido (11 dígitos)',
             'valor deve ter no máximo 2 casas decimais',
             'prazoMeses deve estar entre 6 e 84 para CONSIGNADO_INSS',
+            'amortizacao é obrigatória e deve ser PRICE ou SAC',
           ]),
           409: respostaErro('Já existe operação com esse identificador', 'IDENTIFICADOR_DUPLICADO', 'Já existe operação com identificador "OP-2026-0001"'),
-          422: respostaErro('Pedido recusado: score na faixa E, ou CET sem solução', 'SCORE_INSUFICIENTE', 'Score abaixo do mínimo para contratação'),
+          422: respostaErro(
+            'Pedido recusado e **não** gravado: `DECISAO_NAO_APROVADA` (a decisão recebida não foi APROVADO), `SCORE_INSUFICIENTE` (score na faixa E) ou `CET_NAO_CONVERGE`',
+            'DECISAO_NAO_APROVADA',
+            'Operação não pode ser criada: a decisão recebida foi "REPROVADO" (esperado APROVADO)',
+          ),
           500: ERRO_500,
         },
       },
@@ -325,9 +364,14 @@ Operações recusadas (422) **não** são gravadas.
     '/operacoes/{id}/definicao': {
       post: {
         tags: ['Definição e contrato'],
-        summary: 'Define o sistema de amortização (PRICE ou SAC) de uma operação simulada',
+        summary: 'Define o sistema de amortização de uma operação SIMULADA antiga (legado)',
         description: `
-Chamado pelo **grupo dono da operação**. Muda o estado de \`SIMULADA\` para \`DEFINIDA\`, grava o
+> **Legado desde a T-14 (16/11/2026).** O \`POST /operacoes\` agora exige \`amortizacao\` e a
+> operação já nasce \`DEFINIDA\`, então **nenhuma operação nova passa por aqui** — para elas esta
+> rota responde 409. Ela continua valendo só para as operações que já estavam gravadas como
+> \`SIMULADA\` antes da T-14; \`GET /operacoes?estado=SIMULADA\` lista quais ainda faltam.
+
+Muda o estado de \`SIMULADA\` para \`DEFINIDA\`, grava o
 sistema escolhido e a data/hora, e devolve a operação completa. O calendário definitivo é
 \`simulacoes.<sistema>.cronograma\`, exatamente como foi simulado — nada é recalculado.
 
@@ -506,7 +550,7 @@ recalculado na leitura.
                 enum: [
                   'DADOS_INVALIDOS', 'MODALIDADE_NAO_ENCONTRADA', 'OPERACAO_NAO_ENCONTRADA',
                   'IDENTIFICADOR_DUPLICADO', 'SCORE_INSUFICIENTE', 'CET_NAO_CONVERGE',
-                  'AMORTIZACAO_JA_DEFINIDA', 'OPERACAO_NAO_DEFINIDA',
+                  'DECISAO_NAO_APROVADA', 'AMORTIZACAO_JA_DEFINIDA', 'OPERACAO_NAO_DEFINIDA',
                   'FINOPS_INDISPONIVEL', 'FINOPS_RECUSOU', 'ERRO_INTERNO',
                 ],
               },
@@ -596,8 +640,8 @@ recalculado na leitura.
 
       NovaOperacao: {
         type: 'object',
-        description: 'Corpo do POST /operacoes.',
-        required: ['identificador', 'cliente', 'valor', 'modalidade', 'score', 'prazoMeses'],
+        description: 'Corpo do POST /operacoes, como o grupo de decisão envia.',
+        required: ['identificador', 'cliente', 'valor', 'modalidade', 'score', 'prazoMeses', 'amortizacao'],
         properties: {
           identificador: {
             type: 'string', pattern: '^OP-\\d{4}-\\d{4,}$', maxLength: 20,
@@ -611,6 +655,32 @@ recalculado na leitura.
           prazoMeses: { type: 'integer', minimum: 1, description: 'Deve estar entre prazoMinMeses e prazoMaxMeses da modalidade', example: 12 },
           dataLiberacao: { type: 'string', format: 'date', description: 'AAAA-MM-DD. Opcional: padrão é a data de hoje. Envie sempre nos testes, para o resultado ser reproduzível.', example: '2026-10-30' },
           primeiroRelacionamento: { type: 'boolean', default: false, description: 'true cobra a tarifa de cadastro (só permitida no primeiro relacionamento — Tema 620/STJ)' },
+          amortizacao: {
+            type: 'string', enum: ['PRICE', 'SAC'],
+            description: 'Obrigatório. Sistema de amortização escolhido pelo grupo de decisão: a operação já nasce DEFINIDA com ele. Espaços nas pontas e minúsculas são tolerados (`sac` → `SAC`).',
+            example: 'PRICE',
+          },
+          decisao: {
+            type: 'string',
+            description: 'Resultado da análise do grupo de decisão. Opcional (quem não manda continua criando operação), mas se vier tem de ser `APROVADO` — qualquer outro valor é recusado com 422 DECISAO_NAO_APROVADA e nada é gravado.',
+            example: 'APROVADO',
+          },
+          probabilidadeDefault: {
+            type: 'number', minimum: 0, maximum: 1,
+            description: 'Opcional. Probabilidade de inadimplência estimada pelo modelo de score, de 0 a 1 (0.0412 = 4,12%). Guardada para auditoria; não entra no cálculo da taxa.',
+            example: 0.0412,
+          },
+          contextoScore: {
+            type: 'object', additionalProperties: true,
+            description: 'Opcional. Bloco de auditoria do modelo de score, guardado exatamente como veio. `faixaRisco` aqui é a escala do grupo de decisão (EXCELENTE, BOM...) e não se confunde com `taxa.faixaRisco` (A a D), que é a nossa faixa de score.',
+            example: {
+              scoreFinal: 650,
+              faixaRisco: 'BOM',
+              probabilidadeDefault: 0.0412,
+              modelo: 'SCORE_PF v1.1.0',
+              motivo: 'Score 650 atende ao mínimo para aprovação automática.',
+            },
+          },
         },
       },
 
@@ -769,7 +839,7 @@ recalculado na leitura.
           id: { type: 'integer', example: 1 },
           identificador: { type: 'string', example: 'OP-2026-0001' },
           criadoEm: { type: 'string', description: 'Data/hora da gravação (AAAA-MM-DD HH:MM:SS em GMT-03:00, o fuso da sessão MySQL — DB_TIMEZONE)', example: '2026-10-08 14:03:22' },
-          estado: { type: 'string', enum: ['SIMULADA', 'DEFINIDA'], description: 'SIMULADA ao nascer; DEFINIDA depois da escolha do sistema', example: 'SIMULADA' },
+          estado: { type: 'string', enum: ['SIMULADA', 'DEFINIDA'], description: 'DEFINIDA já no POST (T-14). SIMULADA só em operações antigas, criadas quando a definição era um segundo passo.', example: 'DEFINIDA' },
           definicao: { ...ref('Definicao'), nullable: true },
           finops: { ...ref('Finops'), nullable: true },
           cliente: ref('Cliente'),
@@ -778,6 +848,20 @@ recalculado na leitura.
           simulacoes: {
             type: 'object',
             properties: { PRICE: ref('SimulacaoPrice'), SAC: ref('SimulacaoSac') },
+          },
+          decisao: {
+            type: 'string', nullable: true,
+            description: 'Auditoria (T-14): a decisão recebida do grupo de decisão, como gravada. `null` quando o campo não foi enviado ou a operação é anterior à T-14.',
+            example: 'APROVADO',
+          },
+          probabilidadeDefault: {
+            type: 'number', nullable: true,
+            description: 'Auditoria (T-14): probabilidade de inadimplência recebida, de 0 a 1. `null` quando não enviada.',
+            example: 0.0412,
+          },
+          contextoScore: {
+            type: 'object', additionalProperties: true, nullable: true,
+            description: 'Auditoria (T-14): bloco do modelo de score, como recebido. `null` quando não enviado.',
           },
         },
       },

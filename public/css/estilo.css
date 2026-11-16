@@ -1,0 +1,424 @@
+/* ===========================================================================
+   Painel de Operações — folha de estilo única
+   ---------------------------------------------------------------------------
+   CSS puro, sem framework e sem build. A organização é:
+     1. Tokens (variáveis de cor/espaçamento)  2. Base  3. Topo  4. KPIs
+     5. Painel + filtros  6. Tabela  7. Selos  8. Paginação  9. Gaveta
+    10. Utilitários  11. Responsivo
+   Para mudar as cores do painel inteiro, mexa só no bloco 1.
+   =========================================================================== */
+
+/* 1. TOKENS ---------------------------------------------------------------- */
+:root {
+  --fundo: #f4f6fa;
+  --superficie: #ffffff;
+  --superficie-2: #f8fafc;
+  --borda: #e3e8ef;
+  --texto: #0f172a;
+  --texto-fraco: #5b6b84;
+  --primaria: #2563eb;
+  --primaria-texto: #ffffff;
+  --primaria-fraca: #e8eefc;
+
+  --verde: #047857;
+  --verde-fundo: #d7f3e6;
+  --ambar: #92650a;
+  --ambar-fundo: #fdf0d0;
+  --vermelho: #b42318;
+  --vermelho-fundo: #fde6e3;
+  --cinza: #475569;
+  --cinza-fundo: #e8edf4;
+
+  --raio: 10px;
+  --raio-g: 14px;
+  --sombra: 0 1px 2px rgba(15, 23, 42, .06), 0 8px 24px rgba(15, 23, 42, .06);
+  --fonte: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --fonte-mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+}
+
+/* Modo escuro: segue a preferência do sistema operacional, sem botão. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fundo: #0b1220;
+    --superficie: #121b2d;
+    --superficie-2: #16203a;
+    --borda: #243150;
+    --texto: #e7eefb;
+    --texto-fraco: #94a6c2;
+    --primaria: #4f8cf7;
+    --primaria-texto: #08111f;
+    --primaria-fraca: #1b2b4d;
+
+    --verde: #5fd7a6;
+    --verde-fundo: #0f3b2c;
+    --ambar: #f0c164;
+    --ambar-fundo: #42310c;
+    --vermelho: #fca5a0;
+    --vermelho-fundo: #45191a;
+    --cinza: #a7b6cd;
+    --cinza-fundo: #1e2a44;
+
+    --sombra: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .35);
+  }
+}
+
+/* 2. BASE ------------------------------------------------------------------ */
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--fonte);
+  background: var(--fundo);
+  color: var(--texto);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { margin: 0; line-height: 1.25; }
+table { border-collapse: collapse; width: 100%; }
+
+/* 3. TOPO ------------------------------------------------------------------ */
+.topo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  background: var(--superficie);
+  border-bottom: 1px solid var(--borda);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.topo__marca { display: flex; align-items: center; gap: 12px; }
+
+.topo__logo {
+  width: 40px; height: 40px;
+  display: grid; place-items: center;
+  border-radius: var(--raio);
+  background: var(--primaria);
+  color: var(--primaria-texto);
+  font-weight: 700; font-size: 18px;
+  flex-shrink: 0;
+}
+
+.topo h1 { font-size: 18px; font-weight: 650; letter-spacing: -.01em; }
+.topo__sub { margin: 2px 0 0; font-size: 13px; color: var(--texto-fraco); }
+
+.topo__acoes { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+.interruptor {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 13px; color: var(--texto-fraco);
+  cursor: pointer; user-select: none;
+}
+.interruptor input { accent-color: var(--primaria); width: 15px; height: 15px; cursor: pointer; }
+
+.botao {
+  font: inherit; font-size: 13px; font-weight: 550;
+  padding: 8px 14px;
+  border-radius: var(--raio);
+  border: 1px solid var(--borda);
+  background: var(--superficie);
+  color: var(--texto);
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.botao:hover { background: var(--superficie-2); }
+.botao:focus-visible { outline: 2px solid var(--primaria); outline-offset: 2px; }
+
+.botao--primario { background: var(--primaria); border-color: var(--primaria); color: var(--primaria-texto); }
+.botao--primario:hover { filter: brightness(1.08); background: var(--primaria); }
+.botao[disabled] { opacity: .55; cursor: progress; }
+
+/* Bolinha de status da API, no canto do topo. */
+.status {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 13px; color: var(--texto-fraco);
+  padding: 5px 11px;
+  border: 1px solid var(--borda);
+  border-radius: 999px;
+  background: var(--superficie-2);
+  white-space: nowrap;
+}
+.status::before {
+  content: ""; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--cinza); flex-shrink: 0;
+}
+.status--ok::before { background: var(--verde); }
+.status--erro::before { background: var(--vermelho); }
+.status--carregando::before { background: var(--ambar); animation: pulsa 1s infinite; }
+
+@keyframes pulsa { 50% { opacity: .25; } }
+
+/* 4. CONTEÚDO E KPIS ------------------------------------------------------- */
+.conteudo { max-width: 1320px; margin: 0 auto; padding: 22px 24px 60px; }
+
+.alerta {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  border-radius: var(--raio);
+  border: 1px solid var(--vermelho);
+  background: var(--vermelho-fundo);
+  color: var(--vermelho);
+  font-size: 14px;
+}
+.alerta strong { display: block; margin-bottom: 2px; }
+.alerta code {
+  font-family: var(--fonte-mono); font-size: 12.5px;
+  background: rgba(0, 0, 0, .08); padding: 1px 5px; border-radius: 4px;
+}
+
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.kpi {
+  background: var(--superficie);
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-g);
+  padding: 15px 17px;
+  box-shadow: var(--sombra);
+}
+.kpi__rotulo {
+  font-size: 12px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase;
+  color: var(--texto-fraco);
+}
+.kpi__valor {
+  font-size: 26px; font-weight: 680; letter-spacing: -.02em;
+  margin-top: 5px; font-variant-numeric: tabular-nums;
+}
+.kpi__nota { font-size: 12px; color: var(--texto-fraco); margin-top: 2px; }
+
+/* 5. PAINEL + FILTROS ------------------------------------------------------ */
+.painel {
+  background: var(--superficie);
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-g);
+  box-shadow: var(--sombra);
+  overflow: hidden;
+}
+
+.painel__topo {
+  display: flex; flex-wrap: wrap; gap: 14px;
+  align-items: center; justify-content: space-between;
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--borda);
+}
+.painel__topo h2 { font-size: 15px; font-weight: 650; }
+
+.filtros { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+
+.campo { display: flex; flex-direction: column; gap: 4px; }
+.campo > span { font-size: 11.5px; font-weight: 600; color: var(--texto-fraco); letter-spacing: .02em; }
+.campo select, .campo input {
+  font: inherit; font-size: 13px;
+  padding: 7px 10px;
+  border: 1px solid var(--borda);
+  border-radius: 8px;
+  background: var(--superficie-2);
+  color: var(--texto);
+  min-width: 140px;
+}
+.campo input { min-width: 230px; }
+.campo select:focus, .campo input:focus { outline: 2px solid var(--primaria); outline-offset: -1px; }
+
+/* 6. TABELA ---------------------------------------------------------------- */
+.tabela-rolagem { overflow-x: auto; }
+
+.tabela { font-size: 13.5px; }
+
+.tabela thead th {
+  text-align: left;
+  font-size: 11.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--texto-fraco);
+  padding: 10px 14px;
+  background: var(--superficie-2);
+  border-bottom: 1px solid var(--borda);
+  white-space: nowrap;
+  position: sticky; top: 0;
+}
+
+.tabela tbody td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--borda);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.tabela tbody tr { cursor: pointer; transition: background .1s; }
+.tabela tbody tr:hover { background: var(--primaria-fraca); }
+.tabela tbody tr:last-child td { border-bottom: none; }
+
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--fonte-mono); font-size: 12.5px; }
+.fraco { color: var(--texto-fraco); }
+.sub { display: block; font-size: 11.5px; color: var(--texto-fraco); font-weight: 400; }
+
+/* Operação que apareceu depois da última atualização: pisca em verde uma vez. */
+.linha--nova { animation: destaca 2.4s ease-out; }
+@keyframes destaca {
+  0%, 35% { background: var(--verde-fundo); }
+  100% { background: transparent; }
+}
+
+.vazio { padding: 48px 24px; text-align: center; color: var(--texto-fraco); font-size: 14px; }
+.vazio strong { display: block; color: var(--texto); font-size: 15px; margin-bottom: 4px; }
+
+/* 7. SELOS (badges) -------------------------------------------------------- */
+.selo {
+  display: inline-block;
+  font-size: 11px; font-weight: 650; letter-spacing: .03em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--cinza-fundo);
+  color: var(--cinza);
+  white-space: nowrap;
+}
+.selo--verde { background: var(--verde-fundo); color: var(--verde); }
+.selo--ambar { background: var(--ambar-fundo); color: var(--ambar); }
+.selo--vermelho { background: var(--vermelho-fundo); color: var(--vermelho); }
+.selo--azul { background: var(--primaria-fraca); color: var(--primaria); }
+
+/* 8. PAGINAÇÃO ------------------------------------------------------------- */
+.paginacao {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  align-items: center; justify-content: space-between;
+  padding: 12px 18px;
+  border-top: 1px solid var(--borda);
+  font-size: 13px; color: var(--texto-fraco);
+}
+.paginacao__botoes { display: flex; gap: 8px; align-items: center; }
+
+/* 9. GAVETA DE DETALHE ----------------------------------------------------- */
+.fundo-escuro {
+  position: fixed; inset: 0;
+  background: rgba(8, 15, 30, .45);
+  z-index: 30;
+  animation: aparece .15s;
+}
+@keyframes aparece { from { opacity: 0; } }
+
+.gaveta {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: min(760px, 100%);
+  background: var(--fundo);
+  border-left: 1px solid var(--borda);
+  z-index: 31;
+  display: flex; flex-direction: column;
+  box-shadow: -12px 0 40px rgba(8, 15, 30, .2);
+  animation: desliza .18s ease-out;
+}
+@keyframes desliza { from { transform: translateX(28px); opacity: .4; } }
+
+.gaveta__topo {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
+  padding: 16px 20px;
+  background: var(--superficie);
+  border-bottom: 1px solid var(--borda);
+}
+.gaveta__titulo { font-size: 17px; font-weight: 650; font-family: var(--fonte-mono); }
+.gaveta__selos { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
+
+.gaveta__fechar {
+  font: inherit; font-size: 20px; line-height: 1;
+  width: 32px; height: 32px;
+  display: grid; place-items: center;
+  border: 1px solid var(--borda); border-radius: 8px;
+  background: var(--superficie); color: var(--texto-fraco);
+  cursor: pointer; flex-shrink: 0;
+}
+.gaveta__fechar:hover { background: var(--superficie-2); color: var(--texto); }
+
+.gaveta__corpo { overflow-y: auto; padding: 18px 20px 48px; }
+
+.bloco {
+  background: var(--superficie);
+  border: 1px solid var(--borda);
+  border-radius: var(--raio-g);
+  padding: 15px 17px;
+  margin-bottom: 14px;
+}
+.bloco__titulo {
+  font-size: 11.5px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--texto-fraco);
+  margin-bottom: 11px;
+}
+
+/* Lista de "rótulo: valor" em colunas.
+   Cada par vive dentro de um <div class="dado">: é ELE que vira a célula do
+   grid. Sem esse <div>, <dt> e <dd> entram como duas células soltas e o valor
+   acaba numa coluna diferente do seu rótulo. */
+.dados {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 13px 18px;
+  margin: 0;
+}
+.dado { min-width: 0; }
+.dado dt { font-size: 11.5px; color: var(--texto-fraco); margin-bottom: 2px; }
+.dado dd {
+  margin: 0; font-size: 14px; font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.dado .sub { font-weight: 400; margin-top: 1px; }
+
+/* Abas PRICE / SAC */
+.abas { display: flex; gap: 7px; margin-bottom: 13px; }
+.aba {
+  font: inherit; font-size: 13px; font-weight: 600;
+  padding: 7px 15px;
+  border: 1px solid var(--borda); border-radius: 999px;
+  background: var(--superficie); color: var(--texto-fraco);
+  cursor: pointer;
+}
+.aba:hover { background: var(--superficie-2); }
+.aba[aria-selected="true"] {
+  background: var(--primaria); border-color: var(--primaria); color: var(--primaria-texto);
+}
+
+details.cronograma { margin-top: 14px; }
+details.cronograma > summary {
+  cursor: pointer; font-size: 13px; font-weight: 600; color: var(--primaria);
+  padding: 7px 0; list-style: none;
+}
+details.cronograma > summary::-webkit-details-marker { display: none; }
+details.cronograma > summary::before { content: "▸ "; display: inline-block; transition: transform .12s; }
+details.cronograma[open] > summary::before { content: "▾ "; }
+
+.tabela--interna { font-size: 12.5px; margin-top: 8px; }
+.tabela--interna th, .tabela--interna td { padding: 7px 10px; }
+.tabela--interna thead th { position: static; }
+
+.carregando { padding: 44px; text-align: center; color: var(--texto-fraco); font-size: 14px; }
+
+/* 10. UTILITÁRIOS ---------------------------------------------------------- */
+[hidden] { display: none !important; }
+
+.rodape {
+  margin-top: 26px; text-align: center;
+  font-size: 12px; color: var(--texto-fraco);
+}
+.rodape a { color: var(--primaria); }
+
+/* 11. RESPONSIVO ----------------------------------------------------------- */
+@media (max-width: 760px) {
+  .conteudo { padding: 16px 14px 48px; }
+  .topo { padding: 13px 14px; }
+  .topo__acoes { width: 100%; }
+  .campo input { min-width: 0; width: 100%; }
+  .campo, .filtros { width: 100%; }
+  .kpi__valor { font-size: 22px; }
+  .gaveta { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

@@ -3,7 +3,9 @@ import { Router } from 'express';
 import { validaEntrada } from '../servicos/validaEntrada.js';
 import { calculaTaxa } from '../servicos/taxa.js';
 import { simulaOperacao } from '../servicos/simulacao.js';
-import { avaliaDefinicao, erroJaDefinida, ESTADOS } from '../servicos/definicao.js';
+import {
+  avaliaDefinicao, erroJaDefinida, exigeDecisaoAprovada, ESTADOS,
+} from '../servicos/definicao.js';
 import { montaConsolidado } from '../servicos/consolidado.js';
 import { registraOperacaoDefinida } from '../servicos/finops.js';
 import * as repositorio from '../repositorios/operacoes.js';
@@ -49,13 +51,17 @@ async function respondeConsolidado(operacao, res) {
   res.json(montaConsolidado(operacao, modalidade));
 }
 
-// POST /api/operacoes — valida, simula, grava e devolve a operação completa (T-07; T-09: cliente)
+// POST /api/operacoes — valida, simula, grava DEFINIDA e devolve a operação completa
+// (T-07; T-09: cliente; T-14: `amortizacao` do grupo de decisão, operação já nasce DEFINIDA)
 router.post('/', async (req, res) => {
-  // 1. Validação (confere a modalidade na tabela `modalidades`; valida CPF/CNPJ do cliente):
-  //    lança 400 DADOS_INVALIDOS com todos os problemas em `detalhes`.
+  // 1. Validação (confere a modalidade na tabela `modalidades`; valida CPF/CNPJ do cliente;
+  //    exige `amortizacao` PRICE ou SAC): lança 400 DADOS_INVALIDOS com todos os problemas.
   const entrada = await validaEntrada(req.body);
 
-  // 2. Identificador precisa ser único (409).
+  // 2. Crédito negado pelo grupo de decisão → 422, antes de simular ou gravar qualquer coisa.
+  exigeDecisaoAprovada(entrada.decisao);
+
+  // 3. Identificador precisa ser único (409).
   if (await repositorio.existeIdentificador(entrada.identificador)) {
     throw new ErroDeNegocio(
       409,
@@ -64,19 +70,29 @@ router.post('/', async (req, res) => {
     );
   }
 
-  // 3. Taxa pela tabela `faixas_juros`: lança 422 SCORE_INSUFICIENTE na faixa E.
+  // 4. Taxa pela tabela `faixas_juros`: lança 422 SCORE_INSUFICIENTE na faixa E.
   const taxa = await calculaTaxa(entrada.modalidade, entrada.score);
 
-  // 4. Simulação (função pura): lança 422 CET_NAO_CONVERGE — nada é gravado nesses casos.
+  // 5. Simulação (função pura): lança 422 CET_NAO_CONVERGE — nada é gravado nesses casos.
   //    Devolve { entrada, cliente, taxa, simulacoes }: o formato que salvar() grava.
+  //    As DUAS simulações continuam sendo calculadas e gravadas: `amortizacao` diz qual vale, mas
+  //    o consolidado e o PDF do grupo de Documentos mostram as duas para comparação.
   const simulacao = simulaOperacao(entrada, taxa);
 
-  // 5. Grava. Se duas requisições com o mesmo identificador chegarem ao mesmo tempo, a checagem
-  //    do passo 2 pode passar nas duas; a UNIQUE KEY do banco barra a segunda (ER_DUP_ENTRY),
-  //    e traduzimos para o mesmo 409 em vez de deixar virar 500.
+  // 6. Grava já DEFINIDA, com o sistema que o grupo de decisão escolheu. Se duas requisições com
+  //    o mesmo identificador chegarem ao mesmo tempo, a checagem do passo 3 pode passar nas duas;
+  //    a UNIQUE KEY do banco barra a segunda (ER_DUP_ENTRY), e traduzimos para o mesmo 409 em vez
+  //    de deixar virar 500.
   let id;
   try {
-    id = await repositorio.salvar({ identificador: entrada.identificador, ...simulacao });
+    id = await repositorio.salvar({
+      identificador: entrada.identificador,
+      sistema: entrada.amortizacao,
+      ...simulacao,
+      decisao: entrada.decisao,
+      probabilidadeDefault: entrada.probabilidadeDefault,
+      contextoScore: entrada.contextoScore,
+    });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') {
       throw new ErroDeNegocio(
@@ -88,8 +104,14 @@ router.post('/', async (req, res) => {
     throw err;
   }
 
-  // 6. Relê do banco para devolver exatamente o que ficou gravado (com id, criadoEm, estado).
+  // 7. Relê do banco para devolver exatamente o que ficou gravado (com id, criadoEm, estado).
   const operacao = await repositorio.buscarPorId(id);
+
+  // 8. A operação nasceu DEFINIDA, então os outros grupos já podem ser avisados agora — o mesmo
+  //    envio que a rota /definicao faz. Nunca lança erro: a operação já está gravada, e falha de
+  //    outro grupo só aparece no terminal (ver servicos/integracoes.js).
+  await notificaDefinicao(operacao);
+
   res.status(201).json(operacao);
 });
 
@@ -149,6 +171,11 @@ router.get('/:id/consolidado', async (req, res) => {
 });
 
 // POST /api/operacoes/:id/definicao — o outro grupo escolhe PRICE ou SAC (T-10)
+//
+// A partir da T-14 (16/11/2026) nenhuma operação NOVA passa por aqui: o POST /api/operacoes já
+// exige `amortizacao` e grava DEFINIDA. A rota continua viva só para as operações ANTIGAS que
+// ficaram SIMULADA no banco (`GET /api/operacoes?estado=SIMULADA` lista quais). Para qualquer
+// operação criada depois da T-14 ela responde 409 AMORTIZACAO_JA_DEFINIDA, que é o certo.
 router.post('/:id/definicao', async (req, res) => {
   // 1. id inválido → 400; operação inexistente → 404 (antes de olhar o corpo, como no GET /:id).
   const id = leId(req.params.id);

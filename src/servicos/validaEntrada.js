@@ -3,6 +3,7 @@ import { ErroDeNegocio } from '../lib/erros.js';
 import { ehDataValida } from '../lib/datas.js';
 import { validaCliente } from '../lib/documento.js';
 import { arredonda2 } from '../lib/util.js';
+import { SISTEMAS } from './definicao.js';
 
 // Identificador da operação na esteira (T-13): o FinOps usa ele como `numeroOperacao`, exige o
 // formato OP-AAAA-NNNN (4 dígitos ou mais na sequência; ADR-009 deles) e a coluna lá é VARCHAR(20).
@@ -31,7 +32,8 @@ function hojeIso() {
 // Valida o corpo do POST /api/operacoes e devolve a entrada NORMALIZADA:
 //   { identificador, cliente ({ tipoPessoa, documento só com dígitos }), valor,
 //     modalidade (LINHA da tabela modalidades), score, prazoMeses,
-//     dataLiberacao (hoje se ausente), primeiroRelacionamento (false se ausente) }
+//     dataLiberacao (hoje se ausente), primeiroRelacionamento (false se ausente),
+//     amortizacao, decisao, probabilidadeDefault, contextoScore }
 //
 // A modalidade é conferida no banco (tabela modalidades, via repositório) — por isso a função
 // é async. `repositorio` só é passado pelos testes, que usam um "banco falso".
@@ -39,12 +41,20 @@ function hojeIso() {
 // Desde 08/10/2026 (T-09) o `cliente` é obrigatório: tipoPessoa PF/PJ e CPF/CNPJ válido
 // (src/lib/documento.js). PJ pode usar qualquer modalidade do catálogo (decisão Q3).
 //
+// Desde 16/11/2026 (T-14) quem chama é o GRUPO DE DECISÃO, que já resolveu o sistema de
+// amortização. Por isso `amortizacao` é OBRIGATÓRIA e a operação nasce DEFINIDA (ver a rota).
+// Os campos de auditoria da decisão (`decisao`, `probabilidadeDefault`, `contextoScore`) são
+// opcionais: guardamos como recebidos, sem recalcular nada. A recusa quando `decisao` não é
+// APROVADO é 422 e fica em `exigeDecisaoAprovada` (servicos/definicao.js), não aqui — aqui só
+// conferimos FORMATO, para o 400 continuar listando todos os problemas de uma vez.
+//
 // Não para no primeiro problema: acumula todos em `erros` e lança um único
 // ErroDeNegocio 400 DADOS_INVALIDOS com a lista completa em `detalhes`.
 export async function validaEntrada(body, repositorio = repositorioModalidades) {
   const dados = body ?? {}; // corpo vazio / sem JSON não pode derrubar o servidor
   const {
     identificador, cliente, valor, modalidade, score, prazoMeses, dataLiberacao, primeiroRelacionamento,
+    amortizacao, decisao, probabilidadeDefault, contextoScore,
   } = dados;
 
   const erros = [];
@@ -114,6 +124,33 @@ export async function validaEntrada(body, repositorio = repositorioModalidades) 
     erros.push('primeiroRelacionamento deve ser true ou false');
   }
 
+  // amortizacao: OBRIGATÓRIA (T-14). É o sistema que o grupo de decisão escolheu; a operação
+  // já nasce DEFINIDA com ele. Espaços nas pontas e minúsculas são tolerados ('sac' → 'SAC').
+  const amortizacaoLimpa = typeof amortizacao === 'string' ? amortizacao.trim().toUpperCase() : '';
+  if (!SISTEMAS.includes(amortizacaoLimpa)) {
+    erros.push(`amortizacao é obrigatória e deve ser ${SISTEMAS.join(' ou ')}`);
+  }
+
+  // decisao: opcional no formato; se vier, tem de ser texto não vazio. O valor em si (APROVADO
+  // ou não) é regra de negócio, avaliada depois em exigeDecisaoAprovada → 422.
+  const decisaoLimpa = typeof decisao === 'string' ? decisao.trim().toUpperCase() : undefined;
+  if (!ausente(decisao) && (decisaoLimpa === undefined || decisaoLimpa === '')) {
+    erros.push('decisao deve ser um texto não vazio (ex.: APROVADO)');
+  }
+
+  // probabilidadeDefault: opcional; probabilidade, então entre 0 e 1 (0.0128 = 1,28%).
+  if (!ausente(probabilidadeDefault)
+    && (typeof probabilidadeDefault !== 'number' || !Number.isFinite(probabilidadeDefault)
+      || probabilidadeDefault < 0 || probabilidadeDefault > 1)) {
+    erros.push('probabilidadeDefault deve ser um número entre 0 e 1');
+  }
+
+  // contextoScore: opcional; objeto de auditoria do modelo de score, guardado como veio.
+  if (!ausente(contextoScore)
+    && (typeof contextoScore !== 'object' || Array.isArray(contextoScore))) {
+    erros.push('contextoScore deve ser um objeto');
+  }
+
   if (erros.length > 0) {
     throw new ErroDeNegocio(400, 'DADOS_INVALIDOS', 'Há campos inválidos na requisição', erros);
   }
@@ -127,5 +164,10 @@ export async function validaEntrada(body, repositorio = repositorioModalidades) 
     prazoMeses,
     dataLiberacao: ausente(dataLiberacao) ? hojeIso() : dataLiberacao,
     primeiroRelacionamento: ausente(primeiroRelacionamento) ? false : primeiroRelacionamento,
+    amortizacao: amortizacaoLimpa,
+    // Auditoria da decisão: null (e não undefined) para a operação gravada ter sempre as chaves.
+    decisao: ausente(decisao) ? null : decisaoLimpa,
+    probabilidadeDefault: ausente(probabilidadeDefault) ? null : probabilidadeDefault,
+    contextoScore: ausente(contextoScore) ? null : contextoScore,
   };
 }

@@ -12,6 +12,7 @@ async function operacaoA5({ sistema, cliente = { tipoPessoa: 'PF', documento: '5
   const entrada = await validaEntrada({
     identificador: 'OP-2026-0001', cliente, valor: 10000, modalidade: 'CONSIGNADO_INSS',
     score: 650, prazoMeses: 12, dataLiberacao: '2026-10-30', primeiroRelacionamento: true,
+    amortizacao: sistema ?? 'PRICE', // obrigatória desde a T-14
   }, repositorioModalidadesFalso);
   const taxa = await calculaTaxa(entrada.modalidade, entrada.score, repositorioFaixasFalso);
   const operacao = {

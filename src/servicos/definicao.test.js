@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { avaliaDefinicao, erroJaDefinida, SISTEMAS, ESTADOS } from './definicao.js';
+import {
+  avaliaDefinicao, erroJaDefinida, exigeDecisaoAprovada, SISTEMAS, ESTADOS, DECISAO_APROVADA,
+} from './definicao.js';
 import { ErroDeNegocio } from '../lib/erros.js';
 
 const simulada = { id: 1, estado: 'SIMULADA', definicao: null };
@@ -49,4 +51,26 @@ test('erroJaDefinida: monta o mesmo 409 usado pela rota na corrida', () => {
   assert.equal(erro.status, 409);
   assert.equal(erro.codigo, 'AMORTIZACAO_JA_DEFINIDA');
   assert.match(erro.message, /PRICE/);
+});
+
+// ---------- exigeDecisaoAprovada (T-14) ----------
+test('exigeDecisaoAprovada: APROVADO passa; ausente (null/undefined) também passa', () => {
+  assert.equal(DECISAO_APROVADA, 'APROVADO');
+  assert.doesNotThrow(() => exigeDecisaoAprovada('APROVADO'));
+  // Compatibilidade: quem ainda não manda o campo continua criando operação.
+  assert.doesNotThrow(() => exigeDecisaoAprovada(null));
+  assert.doesNotThrow(() => exigeDecisaoAprovada(undefined));
+});
+
+test('exigeDecisaoAprovada: qualquer outra decisão → 422 DECISAO_NAO_APROVADA citando o que veio', () => {
+  for (const decisao of ['REPROVADO', 'NEGADO', 'PENDENTE', 'EM_ANALISE']) {
+    assert.throws(() => exigeDecisaoAprovada(decisao), (erro) => {
+      assert.ok(erro instanceof ErroDeNegocio);
+      assert.equal(erro.status, 422);
+      assert.equal(erro.codigo, 'DECISAO_NAO_APROVADA');
+      assert.ok(erro.message.includes(decisao), erro.message);
+      assert.ok(erro.message.includes('APROVADO'), erro.message);
+      return true;
+    }, `decisao ${decisao}`);
+  }
 });

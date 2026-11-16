@@ -1,5 +1,13 @@
 # Documentação do Projeto — Cálculo de Juros (API + Banco de Dados)
 
+> ⚠️ **Documento histórico (24/09–25/09/2026).** Descreve o projeto antes das fases T-09 a T-14:
+> aqui a operação ainda nasce `SIMULADA`, não há cliente (CPF/CNPJ), consolidado, integrações nem
+> as colunas `finops_*`. Para o estado atual, use:
+> - **[`onboarding-tecnico.md`](onboarding-tecnico.md)** — como rodar, arquitetura, endpoints, dívidas conhecidas;
+> - **[`regras-de-negocio.md`](regras-de-negocio.md)** — regras de negócio e catálogo de preço.
+>
+> Este arquivo continua útil como registro detalhado da fase de banco de dados.
+
 > Documento gerado a partir da leitura completa do código-fonte, dos scripts de banco e dos
 > documentos de planejamento (`docs/backlog-api.md`, `docs/backlog-db.md`, `docs/backlog.md`,
 > `docs/research_tabela-juros-brasil_20260831.md`, `docs/inventario-processos.md`) existentes no

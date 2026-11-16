@@ -1,9 +1,15 @@
 import express from 'express';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import rotas from './routes/index.js';
 import { ErroDeNegocio } from './lib/erros.js';
 
 const app = express();
+
+// Em ESM não existe __dirname: ele é reconstruído a partir da URL deste arquivo.
+// `PASTA_PUBLICA` aponta para <raiz do projeto>/public (este arquivo está em src/).
+const PASTA_PUBLICA = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
 // CORS: libera a API para qualquer origem (*). Vem antes de tudo para que até as
 // respostas de erro (ex.: JSON inválido) saiam com os cabeçalhos e o navegador não as bloqueie.
@@ -23,6 +29,12 @@ app.use((req, res, next) => {
 // Middlewares globais
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Painel de acompanhamento (frontend estático em public/): HTML, CSS e JS puros,
+// servidos na raiz — http://localhost:3000/ abre o public/index.html sozinho.
+// Não colide com a API porque tudo que é API vive sob /api, e public/ não tem
+// pasta "api". É só leitura: o painel consome os mesmos endpoints públicos.
+app.use(express.static(PASTA_PUBLICA));
 
 // Todas as rotas da aplicação ficam sob /api
 app.use('/api', rotas);

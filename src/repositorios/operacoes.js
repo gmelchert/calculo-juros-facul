@@ -66,21 +66,37 @@ export async function existeIdentificador(identificador) {
 
 // Grava a operação e devolve o id gerado. `cliente`, `entrada`, `taxa` e `simulacoes` vêm da
 // simulação (T-07/T-09). `cliente.documento` já chega só com dígitos (validaEntrada).
-// `estado` fica no DEFAULT da tabela ('SIMULADA').
-export async function salvar({ identificador, cliente, entrada, taxa, simulacoes }) {
+//
+// Desde 16/11/2026 (T-14) a operação JÁ NASCE DEFINIDA: `sistema` (PRICE ou SAC) vem do grupo de
+// decisão, então gravamos estado='DEFINIDA', sistema_definido, definido_em = NOW() e
+// finops_status='PENDENTE' no MESMO INSERT. Esse PENDENTE não é opcional: o CHECK
+// ck_operacoes_finops exige um status quando o estado é DEFINIDA (db/schema.sql).
+// Gravar tudo de uma vez evita o instante em que a operação existiria SIMULADA (era o que o
+// par INSERT + `definir()` fazia) e dispensa transação.
+//
+// `decisao`, `probabilidadeDefault` e `contextoScore` são a auditoria da decisão: entram no JSON
+// `resultado` como vieram (null quando não enviados) e voltam no topo da operação, porque
+// linhaParaOperacao espalha `resultado`. Operações gravadas antes da T-14 não têm essas chaves.
+export async function salvar({
+  identificador, sistema, cliente, entrada, taxa, simulacoes,
+  decisao = null, probabilidadeDefault = null, contextoScore = null,
+}) {
   const [resultado] = await pool.query(
     `INSERT INTO operacoes
        (identificador, tipo_pessoa, documento, modalidade_codigo, valor, score, prazo_meses,
         data_liberacao, primeiro_relacionamento, faixa_risco, taxa_final_mes,
-        cet_price_ano, cet_sac_ano, resultado)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        cet_price_ano, cet_sac_ano, resultado,
+        estado, sistema_definido, definido_em, finops_status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+             'DEFINIDA', ?, NOW(), 'PENDENTE')`,
     [
       identificador, cliente.tipoPessoa, cliente.documento,
       entrada.modalidade, entrada.valor, entrada.score, entrada.prazoMeses,
       entrada.dataLiberacao, entrada.primeiroRelacionamento ? 1 : 0,
       taxa.faixaRisco, taxa.taxaFinalMes,
       simulacoes.PRICE.cet.anualPercentual, simulacoes.SAC.cet.anualPercentual,
-      JSON.stringify({ cliente, entrada, taxa, simulacoes }),
+      JSON.stringify({ cliente, entrada, taxa, simulacoes, decisao, probabilidadeDefault, contextoScore }),
+      sistema,
     ],
   );
   return resultado.insertId;

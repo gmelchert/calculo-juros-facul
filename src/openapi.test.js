@@ -49,12 +49,38 @@ test('OpenAPI: o exemplo da operação é calculado pelo código e bate com o ce
   assert.equal(exemplo.simulacoes.SAC.cet.anualPercentual, 30.96);
   assert.equal(exemplo.simulacoes.PRICE.cronograma.length, 12);
   assert.equal(exemplo.entrada.modalidade, 'CONSIGNADO_INSS');
-  // T-09/T-10: cliente só com dígitos; nasce SIMULADA sem definição
+  // T-09: cliente só com dígitos. T-14: nasce DEFINIDA, com o FinOps ainda PENDENTE.
   assert.deepEqual(exemplo.cliente, { tipoPessoa: 'PF', documento: '52998224725' });
-  assert.equal(exemplo.estado, 'SIMULADA');
-  assert.equal(exemplo.definicao, null);
-  assert.equal(exemplo.finops, null); // T-13: só DEFINIDA tem registro no FinOps
+  assert.equal(exemplo.estado, 'DEFINIDA');
+  assert.equal(exemplo.definicao.sistema, 'PRICE');
+  assert.equal(exemplo.definicao.definidoEm, exemplo.criadoEm); // definida no mesmo POST
+  assert.equal(exemplo.finops.status, 'PENDENTE');
+  assert.equal(exemplo.finops.id, null);
   assert.equal('cliente' in exemplo.entrada, false);
+  // T-14: auditoria do grupo de decisão volta junto com a operação
+  assert.equal(exemplo.decisao, 'APROVADO');
+  assert.equal(exemplo.probabilidadeDefault, 0.0412);
+  assert.equal(exemplo.contextoScore.modelo, 'SCORE_PF v1.1.0');
+});
+
+test('OpenAPI: o pedido exige amortizacao e documenta os campos de auditoria da decisão (T-14)', () => {
+  const schema = openapi.components.schemas.NovaOperacao;
+  assert.ok(schema.required.includes('amortizacao'), 'amortizacao deveria ser obrigatória');
+  assert.deepEqual(schema.properties.amortizacao.enum, ['PRICE', 'SAC']);
+  for (const campo of ['decisao', 'probabilidadeDefault', 'contextoScore']) {
+    assert.ok(campo in schema.properties, `NovaOperacao deveria documentar ${campo}`);
+    assert.equal(schema.required.includes(campo), false, `${campo} é opcional`);
+  }
+  // o exemplo do pedido é o payload real do grupo de decisão
+  const pedido = openapi.paths['/operacoes'].post.requestBody.content['application/json'].example;
+  assert.equal(pedido.amortizacao, 'PRICE');
+  assert.equal(pedido.decisao, 'APROVADO');
+
+  // 422 do POST passa a citar a recusa por decisão não aprovada
+  assert.equal(
+    openapi.paths['/operacoes'].post.responses[422].content['application/json'].example.erro.codigo,
+    'DECISAO_NAO_APROVADA',
+  );
 });
 
 test('OpenAPI: o exemplo da definição é a mesma operação em estado DEFINIDA, já REGISTRADA no FinOps', () => {
@@ -101,6 +127,7 @@ test('OpenAPI: os códigos de erro do schema Erro são os do Anexo B do backlog'
     'AMORTIZACAO_JA_DEFINIDA',
     'CET_NAO_CONVERGE',
     'DADOS_INVALIDOS',
+    'DECISAO_NAO_APROVADA',
     'ERRO_INTERNO',
     'FINOPS_INDISPONIVEL',
     'FINOPS_RECUSOU',

@@ -36,7 +36,7 @@ async function operacaoDefinida(finops = { status: 'PENDENTE', id: null, erro: n
   const entrada = await validaEntrada({
     identificador: 'OP-2026-0001', cliente: { tipoPessoa: 'PF', documento: '529.982.247-25' },
     valor: 10000, modalidade: 'CONSIGNADO_INSS', score: 650, prazoMeses: 12,
-    dataLiberacao: '2026-10-30', primeiroRelacionamento: true,
+    dataLiberacao: '2026-10-30', primeiroRelacionamento: true, amortizacao: 'PRICE',
   }, repositorioModalidadesFalso);
   const taxa = await calculaTaxa(entrada.modalidade, entrada.score, repositorioFaixasFalso);
   return {

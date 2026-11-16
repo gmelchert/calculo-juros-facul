@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Painel de Operações — Simulação de Crédito</title>
+  <meta name="description" content="Painel de acompanhamento das operações de crédito recebidas pela API calculo-juros.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232563eb'/><text x='50' y='72' font-size='62' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'>%</text></svg>">
+  <link rel="stylesheet" href="./css/estilo.css">
+</head>
+<body>
+
+<!-- =======================================================================
+     TOPO: identidade do painel, status da API e botões de atualização.
+     ======================================================================= -->
+<header class="topo">
+  <div class="topo__marca">
+    <span class="topo__logo" aria-hidden="true">%</span>
+    <div>
+      <h1>Painel de Operações</h1>
+      <p class="topo__sub">Acompanhamento das operações de crédito recebidas pela API</p>
+    </div>
+  </div>
+
+  <div class="topo__acoes">
+    <span id="statusApi" class="status status--carregando">Conectando…</span>
+
+    <label class="interruptor" title="Recarrega a lista sozinho, sem você clicar em nada">
+      <input type="checkbox" id="autoAtualizar" checked>
+      <span>Atualizar a cada 15s</span>
+    </label>
+
+    <button type="button" id="btnAtualizar" class="botao botao--primario">Atualizar agora</button>
+  </div>
+</header>
+
+<main class="conteudo">
+
+  <!-- Faixa vermelha de erro. Fica escondida enquanto está tudo bem. -->
+  <section id="alerta" class="alerta" role="alert" hidden></section>
+
+  <!-- =====================================================================
+       INDICADORES: contagens vindas da própria API (campo `total` da
+       listagem), por isso valem para o banco inteiro, não só para a página.
+       ===================================================================== -->
+  <section class="kpis" aria-label="Indicadores gerais">
+    <article class="kpi">
+      <div class="kpi__rotulo">Operações</div>
+      <div class="kpi__valor" id="kpiTotal">—</div>
+      <div class="kpi__nota">total no banco</div>
+    </article>
+
+    <article class="kpi">
+      <div class="kpi__rotulo">Definidas</div>
+      <div class="kpi__valor" id="kpiDefinidas">—</div>
+      <div class="kpi__nota">com PRICE ou SAC escolhido</div>
+    </article>
+
+    <article class="kpi">
+      <div class="kpi__rotulo">Simuladas</div>
+      <div class="kpi__valor" id="kpiSimuladas">—</div>
+      <div class="kpi__nota">aguardando definição (legado)</div>
+    </article>
+
+    <article class="kpi">
+      <div class="kpi__rotulo">Valor na página</div>
+      <div class="kpi__valor" id="kpiValor">—</div>
+      <div class="kpi__nota">soma apenas das linhas visíveis</div>
+    </article>
+  </section>
+
+  <!-- =====================================================================
+       LISTAGEM
+       ===================================================================== -->
+  <section class="painel">
+    <div class="painel__topo">
+      <h2>Operações recebidas</h2>
+
+      <div class="filtros">
+        <label class="campo">
+          <span>Estado</span>
+          <select id="filtroEstado">
+            <option value="">Todos</option>
+            <option value="DEFINIDA">Definidas</option>
+            <option value="SIMULADA">Simuladas</option>
+          </select>
+        </label>
+
+        <label class="campo">
+          <span>Por página</span>
+          <select id="filtroTamanho">
+            <option value="10">10</option>
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+
+        <label class="campo">
+          <span>Filtrar nesta página</span>
+          <input type="search" id="filtroBusca" placeholder="identificador, documento ou modalidade"
+                 autocomplete="off">
+        </label>
+      </div>
+    </div>
+
+    <div class="tabela-rolagem">
+      <table class="tabela">
+        <thead>
+          <tr>
+            <th scope="col">Identificador</th>
+            <th scope="col">Cliente</th>
+            <th scope="col">Modalidade</th>
+            <th scope="col" class="num">Valor</th>
+            <th scope="col" class="num">Prazo</th>
+            <th scope="col" class="num">Taxa/mês</th>
+            <th scope="col" class="num">CET a.a.</th>
+            <th scope="col">Estado</th>
+            <th scope="col">FinOps</th>
+            <th scope="col">Criada em</th>
+          </tr>
+        </thead>
+        <tbody id="corpoTabela">
+          <tr><td colspan="10" class="carregando">Carregando operações…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="paginacao">
+      <span id="resumoPaginacao">—</span>
+      <span class="paginacao__botoes">
+        <button type="button" id="btnAnterior" class="botao" disabled>← Anterior</button>
+        <button type="button" id="btnProxima" class="botao" disabled>Próxima →</button>
+      </span>
+    </div>
+  </section>
+
+  <p class="rodape">
+    Somente leitura — este painel não cria nem altera operações.
+    Documentação da API em <a href="/api/docs" target="_blank" rel="noopener">/api/docs</a>.
+    <span id="ultimaAtualizacao"></span>
+  </p>
+</main>
+
+<!-- =======================================================================
+     GAVETA DE DETALHE: abre ao clicar numa linha da tabela.
+     O conteúdo é montado pelo JS em #detalheCorpo.
+     ======================================================================= -->
+<div id="fundoEscuro" class="fundo-escuro" hidden></div>
+
+<aside id="gaveta" class="gaveta" role="dialog" aria-modal="true" aria-labelledby="gavetaTitulo" hidden>
+  <div class="gaveta__topo">
+    <div>
+      <div class="gaveta__titulo" id="gavetaTitulo">—</div>
+      <div class="gaveta__selos" id="gavetaSelos"></div>
+    </div>
+    <button type="button" class="gaveta__fechar" id="btnFechar" aria-label="Fechar detalhe">×</button>
+  </div>
+  <div class="gaveta__corpo" id="detalheCorpo"></div>
+</aside>
+
+<!-- Scripts comuns (não são módulos de propósito: assim o painel também abre
+     direto do arquivo, com duplo clique, sem precisar de servidor). -->
+<script src="./js/formata.js"></script>
+<script src="./js/api.js"></script>
+<script src="./js/app.js"></script>
+</body>
+</html>

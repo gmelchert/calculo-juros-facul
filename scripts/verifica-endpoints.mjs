@@ -62,15 +62,28 @@ async function cenario(nome, fn) {
 const CLIENTE_PF = { tipoPessoa: 'PF', documento: '529.982.247-25' };
 const CLIENTE_PJ = { tipoPessoa: 'PJ', documento: '11.222.333/0001-81' };
 
+// Auditoria que o grupo de decisão manda junto (T-14). Guardada como veio; não entra na conta.
+const CONTEXTO_SCORE = {
+  scoreFinal: 650,
+  faixaRisco: 'BOM', // escala DELES; a nossa é taxa.faixaRisco = 'B'
+  probabilidadeDefault: 0.0412,
+  modelo: 'SCORE_PF v1.1.0',
+  motivo: 'Score 650 atende ao mínimo para aprovação automática.',
+};
+
 const corpoA5 = {
   identificador: ident(1),
   cliente: CLIENTE_PF,
+  decisao: 'APROVADO',
   valor: 10000,
   modalidade: 'CONSIGNADO_INSS',
   score: 650,
+  probabilidadeDefault: 0.0412,
   prazoMeses: 12,
   dataLiberacao: '2026-10-30',
   primeiroRelacionamento: true,
+  amortizacao: 'PRICE', // T-14: obrigatória; a operação já nasce DEFINIDA com este sistema
+  contextoScore: CONTEXTO_SCORE,
 };
 
 const CAMINHOS_ESPERADOS = [
@@ -152,17 +165,24 @@ await cenario('GET /modalidades/NAO_EXISTE → 404 MODALIDADE_NAO_ENCONTRADA', a
   assert.equal(r.json.erro.codigo, 'MODALIDADE_NAO_ENCONTRADA');
 });
 
-// ---------- T-07 (+ T-09: cliente) ----------
-await cenario('POST feliz (A.5, PF) → 201 SIMULADA com valores de referência e cliente só com dígitos', async () => {
+// ---------- T-07 (+ T-09: cliente, T-14: nasce DEFINIDA) ----------
+await cenario('POST feliz (A.5, PF) → 201 já DEFINIDA em PRICE, com valores de referência e cliente só com dígitos', async () => {
   const r = await chama('POST', '/operacoes', corpoA5);
   assert.equal(r.status, 201, JSON.stringify(r.json));
   criada = r.json;
   assert.ok(Number.isInteger(criada.id) && criada.id >= 1);
   assert.equal(criada.identificador, corpoA5.identificador);
   assert.match(String(criada.criadoEm), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
-  assert.equal(criada.estado, 'SIMULADA');
-  assert.equal(criada.definicao, null);
-  assert.equal(criada.finops, null); // T-13: só DEFINIDA tem registro no FinOps
+  // T-14: a amortizacao do grupo de decisão já define a operação no próprio POST.
+  assert.equal(criada.estado, 'DEFINIDA');
+  assert.equal(criada.definicao.sistema, 'PRICE');
+  assert.match(String(criada.definicao.definidoEm), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  // O registro no FinOps nasce PENDENTE: o envio é feito depois de gravar e não muda o 201.
+  assert.deepEqual(criada.finops, { status: 'PENDENTE', id: null, erro: null, tentativaEm: null });
+  // T-14: auditoria do grupo de decisão volta como veio
+  assert.equal(criada.decisao, 'APROVADO');
+  assert.equal(criada.probabilidadeDefault, 0.0412);
+  assert.deepEqual(criada.contextoScore, CONTEXTO_SCORE);
   assert.deepEqual(criada.cliente, { tipoPessoa: 'PF', documento: '52998224725' });
   assert.deepEqual(criada.entrada, {
     valor: 10000, modalidade: 'CONSIGNADO_INSS', score: 650, prazoMeses: 12,
@@ -194,7 +214,7 @@ await cenario('linha gravada no banco com colunas planas corretas (inclusive cli
     [corpoA5.identificador],
   );
   assert.ok(l, 'linha não encontrada');
-  assert.equal(l.finops_status, null);
+  assert.equal(l.finops_status, 'PENDENTE'); // T-14: DEFINIDA desde o INSERT → CHECK exige status
   assert.equal(l.finops_id, null);
   assert.equal(l.tipo_pessoa, 'PF');
   assert.equal(l.documento, '52998224725');
@@ -204,9 +224,22 @@ await cenario('linha gravada no banco com colunas planas corretas (inclusive cli
   assert.equal(l.taxa_final_mes, 1.85);
   assert.equal(l.cet_price_ano, 30.89);
   assert.equal(l.cet_sac_ano, 30.96);
-  assert.equal(l.estado, 'SIMULADA');
-  assert.equal(l.sistema_definido, null);
-  assert.equal(l.definido_em, null);
+  assert.equal(l.estado, 'DEFINIDA');
+  assert.equal(l.sistema_definido, 'PRICE');
+  assert.ok(l.definido_em, 'definido_em deveria estar preenchido no próprio INSERT');
+});
+
+await cenario('resultado gravado guarda a auditoria da decisão no JSON (T-14)', async () => {
+  const [[l]] = await pool.query(
+    `SELECT JSON_UNQUOTE(JSON_EXTRACT(resultado, '$.decisao')) decisao,
+            JSON_EXTRACT(resultado, '$.probabilidadeDefault') prob,
+            JSON_UNQUOTE(JSON_EXTRACT(resultado, '$.contextoScore.modelo')) modelo
+       FROM operacoes WHERE identificador = ?`,
+    [corpoA5.identificador],
+  );
+  assert.equal(l.decisao, 'APROVADO');
+  assert.equal(Number(l.prob), 0.0412);
+  assert.equal(l.modelo, 'SCORE_PF v1.1.0');
 });
 
 await cenario('POST repetido → 409 IDENTIFICADOR_DUPLICADO', async () => {
@@ -215,19 +248,105 @@ await cenario('POST repetido → 409 IDENTIFICADOR_DUPLICADO', async () => {
   assert.equal(r.json.erro.codigo, 'IDENTIFICADOR_DUPLICADO');
 });
 
-await cenario('POST {} → 400 DADOS_INVALIDOS com 6 detalhes (identificador, cliente, valor, modalidade, score, prazoMeses)', async () => {
+await cenario('POST {} → 400 DADOS_INVALIDOS com 7 detalhes (identificador, cliente, valor, modalidade, score, prazoMeses, amortizacao)', async () => {
   const r = await chama('POST', '/operacoes', {});
   assert.equal(r.status, 400);
   assert.equal(r.json.erro.codigo, 'DADOS_INVALIDOS');
-  assert.equal(r.json.erro.detalhes.length, 6);
+  assert.equal(r.json.erro.detalhes.length, 7, JSON.stringify(r.json.erro.detalhes));
   assert.match(r.json.erro.detalhes[1], /cliente é obrigatório/);
+  assert.match(r.json.erro.detalhes.join(' | '), /amortizacao é obrigatória/);
 });
 
-await cenario('POST sem corpo/JSON → 400 com 6 detalhes', async () => {
+await cenario('POST sem corpo/JSON → 400 com 7 detalhes', async () => {
   const resp = await fetch(base + '/operacoes', { method: 'POST' });
   const json = await resp.json();
   assert.equal(resp.status, 400);
-  assert.equal(json.erro.detalhes.length, 6);
+  assert.equal(json.erro.detalhes.length, 7);
+});
+
+// ---------- T-14: amortizacao e decisão do grupo de decisão ----------
+await cenario('POST sem amortizacao → 400 com UMA mensagem; valor fora de PRICE/SAC também', async () => {
+  const { amortizacao, ...semAmortizacao } = corpoA5;
+  const a = await chama('POST', '/operacoes', { ...semAmortizacao, identificador: ident(30) });
+  assert.equal(a.status, 400, JSON.stringify(a.json));
+  assert.deepEqual(a.json.erro.detalhes, ['amortizacao é obrigatória e deve ser PRICE ou SAC']);
+
+  for (const invalida of ['LINEAR', '', 123, null]) {
+    const r = await chama('POST', '/operacoes', { ...corpoA5, identificador: ident(30), amortizacao: invalida });
+    assert.equal(r.status, 400, `amortizacao ${JSON.stringify(invalida)}: ${JSON.stringify(r.json)}`);
+    assert.deepEqual(r.json.erro.detalhes, ['amortizacao é obrigatória e deve ser PRICE ou SAC']);
+  }
+  const [linhas] = await pool.query('SELECT id FROM operacoes WHERE identificador = ?', [ident(30)]);
+  assert.equal(linhas.length, 0, 'operação sem amortizacao válida foi gravada!');
+});
+
+await cenario('POST amortizacao " sac " → 201 normalizado para SAC (espaços e minúsculas toleradas)', async () => {
+  const r = await chama('POST', '/operacoes', { ...corpoA5, identificador: ident(31), amortizacao: ' sac ' });
+  assert.equal(r.status, 201, JSON.stringify(r.json));
+  assert.equal(r.json.estado, 'DEFINIDA');
+  assert.equal(r.json.definicao.sistema, 'SAC');
+  // o consolidado passa a usar o SAC, sem nenhum passo extra
+  const c = await chama('GET', `/operacoes/${r.json.id}/consolidado`);
+  assert.equal(c.status, 200, JSON.stringify(c.json));
+  assert.equal(c.json.sistema, 'SAC');
+});
+
+await cenario('POST decisao != APROVADO → 422 DECISAO_NAO_APROVADA e NADA gravado', async () => {
+  for (const decisao of ['REPROVADO', 'NEGADO', 'EM_ANALISE']) {
+    const r = await chama('POST', '/operacoes', { ...corpoA5, identificador: ident(32), decisao });
+    assert.equal(r.status, 422, `decisao ${decisao}: ${JSON.stringify(r.json)}`);
+    assert.equal(r.json.erro.codigo, 'DECISAO_NAO_APROVADA');
+    assert.match(r.json.erro.mensagem, new RegExp(decisao));
+  }
+  const [linhas] = await pool.query('SELECT id FROM operacoes WHERE identificador = ?', [ident(32)]);
+  assert.equal(linhas.length, 0, 'operação não aprovada foi gravada!');
+});
+
+await cenario('POST sem os campos de auditoria → 201 com decisao/probabilidadeDefault/contextoScore null', async () => {
+  const { decisao, probabilidadeDefault, contextoScore, ...semAuditoria } = corpoA5;
+  const r = await chama('POST', '/operacoes', { ...semAuditoria, identificador: ident(33) });
+  assert.equal(r.status, 201, JSON.stringify(r.json));
+  assert.equal(r.json.decisao, null);
+  assert.equal(r.json.probabilidadeDefault, null);
+  assert.equal(r.json.contextoScore, null);
+  assert.equal(r.json.estado, 'DEFINIDA'); // amortizacao continua sendo o que define
+});
+
+await cenario('POST com auditoria malformada → 400 (probabilidadeDefault fora de 0..1, contextoScore não objeto)', async () => {
+  const a = await chama('POST', '/operacoes', { ...corpoA5, identificador: ident(34), probabilidadeDefault: 12.8 });
+  assert.equal(a.status, 400, JSON.stringify(a.json));
+  assert.deepEqual(a.json.erro.detalhes, ['probabilidadeDefault deve ser um número entre 0 e 1']);
+  const b = await chama('POST', '/operacoes', { ...corpoA5, identificador: ident(34), contextoScore: 'EXCELENTE' });
+  assert.equal(b.status, 400, JSON.stringify(b.json));
+  assert.deepEqual(b.json.erro.detalhes, ['contextoScore deve ser um objeto']);
+});
+
+await cenario('POST payload do grupo de decisão (CREDITO_PESSOAL, score 872, SAC, 24x) → 201 DEFINIDA em SAC', async () => {
+  const r = await chama('POST', '/operacoes', {
+    identificador: ident(35),
+    cliente: CLIENTE_PF,
+    decisao: 'APROVADO',
+    valor: 10000,
+    modalidade: 'CREDITO_PESSOAL',
+    score: 872,
+    probabilidadeDefault: 0.0128,
+    prazoMeses: 24,
+    dataLiberacao: '2026-11-14',
+    primeiroRelacionamento: false,
+    amortizacao: 'SAC',
+    contextoScore: {
+      scoreFinal: 872, faixaRisco: 'EXCELENTE', probabilidadeDefault: 0.0128,
+      modelo: 'SCORE_PF v1.1.0', motivo: 'Score 872 atende ao mínimo para aprovação automática.',
+    },
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.json));
+  assert.equal(r.json.estado, 'DEFINIDA');
+  assert.equal(r.json.definicao.sistema, 'SAC');
+  assert.equal(r.json.taxa.faixaRisco, 'A'); // score 872 → faixa A (a nossa escala)
+  assert.equal(r.json.contextoScore.faixaRisco, 'EXCELENTE'); // a escala deles, preservada
+  assert.equal(r.json.simulacoes.SAC.cronograma.length, 24);
+  assert.equal(r.json.entrada.primeiroRelacionamento, false);
+  return `faixa nossa=${r.json.taxa.faixaRisco} / deles=${r.json.contextoScore.faixaRisco}`;
 });
 
 await cenario('POST JSON malformado → 400 DADOS_INVALIDOS (não 500)', async () => {
@@ -326,9 +445,10 @@ await cenario('GET /operacoes → 200 paginado, mais recente primeiro, só resum
     'cetPriceAno', 'cetSacAno', 'cliente', 'criadoEm', 'dataLiberacao', 'definicao', 'estado', 'faixaRisco',
     'finops', 'id', 'identificador', 'modalidade', 'prazoMeses', 'score', 'taxaFinalMes', 'valor',
   ]);
-  assert.equal(primeiro.estado, 'SIMULADA');
-  assert.equal(primeiro.definicao, null);
-  assert.equal(primeiro.finops, null);
+  // T-14: toda operação nova já aparece DEFINIDA na listagem, com o FinOps PENDENTE.
+  assert.equal(primeiro.estado, 'DEFINIDA');
+  assert.equal(primeiro.definicao.sistema, 'PRICE');
+  assert.equal(primeiro.finops.status, 'PENDENTE');
   assert.deepEqual(primeiro.cliente, { tipoPessoa: 'PF', documento: '52998224725' });
   return `total=${total}`;
 });
@@ -403,11 +523,15 @@ await cenario('POST PF com CNPJ e PJ com CPF → 400 (tamanho incompatível com 
 
 let pj;
 await cenario('POST PJ (CNPJ 11.222.333/0001-81, A.5) → 201: IOF adicional 95,00; CET 32,38 (Price) / 32,49 (SAC); parcelas iguais', async () => {
-  const r = await chama('POST', '/operacoes', { ...corpoA5, identificador: ident(13), cliente: CLIENTE_PJ });
+  // T-14: a PJ já nasce definida em SAC — é a operação usada nos cenários de consolidado SAC.
+  const r = await chama('POST', '/operacoes', {
+    ...corpoA5, identificador: ident(13), cliente: CLIENTE_PJ, amortizacao: 'SAC',
+  });
   assert.equal(r.status, 201, JSON.stringify(r.json));
   pj = r.json;
   assert.deepEqual(pj.cliente, { tipoPessoa: 'PJ', documento: '11222333000181' });
-  assert.equal(pj.estado, 'SIMULADA');
+  assert.equal(pj.estado, 'DEFINIDA');
+  assert.equal(pj.definicao.sistema, 'SAC');
   assert.deepEqual(pj.simulacoes.PRICE.encargos, { iof: { diario: 167.65, adicional: 95, total: 262.65 }, tarifaCadastro: 50, total: 312.65 });
   assert.equal(pj.simulacoes.PRICE.valorLiberado, 9687.35);
   assert.equal(pj.simulacoes.PRICE.cet.anualPercentual, 32.38);
@@ -424,22 +548,66 @@ await cenario('POST PJ (CNPJ 11.222.333/0001-81, A.5) → 201: IOF adicional 95,
   return `id=${pj.id}`;
 });
 
-// ---------- T-10: definição ----------
-await cenario('GET /:id/consolidado antes de definir → 422 OPERACAO_NAO_DEFINIDA (não 404)', async () => {
-  const r = await chama('GET', `/operacoes/${criada.id}/consolidado`);
+// ---------- T-10: definição (rota LEGADO desde a T-14) ----------
+// Desde a T-14 o POST /operacoes não cria mais nenhuma operação SIMULADA, então os cenários da
+// rota de definição precisam de uma linha no formato ANTIGO. Inserimos direto no banco, copiando
+// a operação A.5 e zerando as colunas de definição — é exatamente o que ficou gravado antes da
+// T-14. Assim a rota continua coberta para as operações que a equipe ainda tem para definir.
+async function criaSimuladaLegado(identificador) {
+  const [r] = await pool.query(
+    `INSERT INTO operacoes (identificador, tipo_pessoa, documento, modalidade_codigo, valor, score,
+         prazo_meses, data_liberacao, primeiro_relacionamento, faixa_risco, taxa_final_mes,
+         cet_price_ano, cet_sac_ano, resultado, estado)
+       SELECT ?, tipo_pessoa, documento, modalidade_codigo, valor, score, prazo_meses, data_liberacao,
+              primeiro_relacionamento, faixa_risco, taxa_final_mes, cet_price_ano, cet_sac_ano,
+              resultado, 'SIMULADA'
+         FROM operacoes WHERE id = ?`,
+    [identificador, criada.id],
+  );
+  return r.insertId;
+}
+
+// Uma para percorrer o fluxo de definição; outra que PERMANECE SIMULADA, para os cenários que
+// precisam de uma operação sem definição (consolidado 422, reenvio ao FinOps 422).
+const IDENT_SIMULADA = ident(20);
+const IDENT_SIMULADA_INTACTA = ident(21);
+let idSimuladaLegado;
+let idSimuladaIntacta;
+await cenario('apoio: cria no banco duas operações SIMULADA no formato anterior à T-14', async () => {
+  idSimuladaLegado = await criaSimuladaLegado(IDENT_SIMULADA);
+  idSimuladaIntacta = await criaSimuladaLegado(IDENT_SIMULADA_INTACTA);
+  for (const id of [idSimuladaLegado, idSimuladaIntacta]) {
+    const g = await chama('GET', `/operacoes/${id}`);
+    assert.equal(g.status, 200, JSON.stringify(g.json));
+    assert.equal(g.json.estado, 'SIMULADA');
+    assert.equal(g.json.definicao, null);
+    assert.equal(g.json.finops, null); // só DEFINIDA tem registro no FinOps
+  }
+  return `ids=${idSimuladaLegado},${idSimuladaIntacta}`;
+});
+
+await cenario('GET /:id/consolidado de operação SIMULADA → 422 OPERACAO_NAO_DEFINIDA (não 404)', async () => {
+  const r = await chama('GET', `/operacoes/${idSimuladaLegado}/consolidado`);
   assert.equal(r.status, 422, JSON.stringify(r.json));
   assert.equal(r.json.erro.codigo, 'OPERACAO_NAO_DEFINIDA');
-  assert.match(r.json.erro.mensagem, new RegExp(`Operação ${criada.id} ainda não tem`));
+  assert.match(r.json.erro.mensagem, new RegExp(`Operação ${idSimuladaLegado} ainda não tem`));
 });
 
 await cenario('POST /:id/definicao {sistema: "price"} / sem corpo → 400 e continua SIMULADA', async () => {
-  const a = await chama('POST', `/operacoes/${criada.id}/definicao`, { sistema: 'price' });
+  const a = await chama('POST', `/operacoes/${idSimuladaLegado}/definicao`, { sistema: 'price' });
   assert.equal(a.status, 400, JSON.stringify(a.json));
   assert.deepEqual(a.json.erro.detalhes, ['sistema deve ser PRICE ou SAC']);
-  const b = await fetch(`${base}/operacoes/${criada.id}/definicao`, { method: 'POST' });
+  const b = await fetch(`${base}/operacoes/${idSimuladaLegado}/definicao`, { method: 'POST' });
   assert.equal(b.status, 400);
-  const depois = await chama('GET', `/operacoes/${criada.id}`);
+  const depois = await chama('GET', `/operacoes/${idSimuladaLegado}`);
   assert.equal(depois.json.estado, 'SIMULADA');
+});
+
+await cenario('POST /:id/definicao numa operação criada já DEFINIDA (T-14) → 409 AMORTIZACAO_JA_DEFINIDA', async () => {
+  const r = await chama('POST', `/operacoes/${criada.id}/definicao`, { sistema: 'SAC' });
+  assert.equal(r.status, 409, JSON.stringify(r.json));
+  assert.equal(r.json.erro.codigo, 'AMORTIZACAO_JA_DEFINIDA');
+  assert.match(r.json.erro.mensagem, /já está definida como PRICE/);
 });
 
 await cenario('POST /99999999/definicao → 404; /abc/definicao → 400', async () => {
@@ -468,18 +636,18 @@ function confereFinopsAposDefinicao(f) {
 }
 
 let definida;
-await cenario(`POST /:id/definicao {sistema: "PRICE"} (PF) → 200 DEFINIDA com definicao, cronograma intacto e finops ${statusFinopsEsperado}`, async () => {
-  const r = await chama('POST', `/operacoes/${criada.id}/definicao`, { sistema: 'PRICE' });
+await cenario(`POST /:id/definicao {sistema: "PRICE"} numa SIMULADA legado → 200 DEFINIDA com definicao, cronograma intacto e finops ${statusFinopsEsperado}`, async () => {
+  const r = await chama('POST', `/operacoes/${idSimuladaLegado}/definicao`, { sistema: 'PRICE' });
   assert.equal(r.status, 200, JSON.stringify(r.json));
   definida = r.json;
-  assert.equal(definida.id, criada.id);
+  assert.equal(definida.id, idSimuladaLegado);
   assert.equal(definida.estado, 'DEFINIDA');
   assert.equal(definida.definicao.sistema, 'PRICE');
   assert.match(String(definida.definicao.definidoEm), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   assert.deepEqual(definida.cliente, criada.cliente);
   assert.deepEqual(definida.simulacoes, criada.simulacoes); // resultado não muda
   confereFinopsAposDefinicao(definida.finops);
-  const [[l]] = await pool.query('SELECT estado, sistema_definido, definido_em, finops_status, finops_id FROM operacoes WHERE id = ?', [criada.id]);
+  const [[l]] = await pool.query('SELECT estado, sistema_definido, definido_em, finops_status, finops_id FROM operacoes WHERE id = ?', [idSimuladaLegado]);
   assert.equal(l.estado, 'DEFINIDA');
   assert.equal(l.sistema_definido, 'PRICE');
   assert.ok(l.definido_em);
@@ -501,34 +669,36 @@ await cenario('definidoEm está em GMT-03:00 (DB_TIMEZONE), o fuso que o FinOps 
 
 await cenario('POST /:id/definicao de novo (SAC e PRICE) → 409 AMORTIZACAO_JA_DEFINIDA citando PRICE', async () => {
   for (const sistema of ['SAC', 'PRICE']) {
-    const r = await chama('POST', `/operacoes/${criada.id}/definicao`, { sistema });
+    const r = await chama('POST', `/operacoes/${idSimuladaLegado}/definicao`, { sistema });
     assert.equal(r.status, 409, JSON.stringify(r.json));
     assert.equal(r.json.erro.codigo, 'AMORTIZACAO_JA_DEFINIDA');
     assert.match(r.json.erro.mensagem, /já está definida como PRICE/);
   }
-  const depois = await chama('GET', `/operacoes/${criada.id}`);
+  const depois = await chama('GET', `/operacoes/${idSimuladaLegado}`);
   assert.equal(depois.json.definicao.sistema, 'PRICE');
 });
 
-await cenario('duas definições em paralelo na PJ (SAC) → exatamente uma 200 e uma 409', async () => {
+// Antes da T-14 a corrida que importava era entre duas definições da MESMA operação. Agora a
+// definição vem no POST, então a corrida que vale é entre dois POSTs com o mesmo identificador:
+// a UNIQUE KEY do banco decide, e a perdedora recebe o mesmo 409 (não um 500).
+await cenario('dois POSTs em paralelo com o mesmo identificador → exatamente um 201 e um 409', async () => {
+  const corpo = { ...corpoA5, identificador: ident(22), cliente: CLIENTE_PJ, amortizacao: 'SAC' };
   const [a, b] = await Promise.all([
-    chama('POST', `/operacoes/${pj.id}/definicao`, { sistema: 'SAC' }),
-    chama('POST', `/operacoes/${pj.id}/definicao`, { sistema: 'SAC' }),
+    chama('POST', '/operacoes', corpo),
+    chama('POST', '/operacoes', corpo),
   ]);
-  assert.deepEqual([a.status, b.status].sort(), [200, 409]);
-  const depois = await chama('GET', `/operacoes/${pj.id}`);
-  assert.equal(depois.json.estado, 'DEFINIDA');
-  assert.equal(depois.json.definicao.sistema, 'SAC');
-  confereFinopsAposDefinicao(depois.json.finops); // a vencedora também foi ao FinOps (SAC)
-  pj = depois.json;
+  assert.deepEqual([a.status, b.status].sort(), [201, 409], JSON.stringify([a.json, b.json]));
+  const perdedora = [a, b].find((r) => r.status === 409);
+  assert.equal(perdedora.json.erro.codigo, 'IDENTIFICADOR_DUPLICADO');
+  const [linhas] = await pool.query('SELECT id FROM operacoes WHERE identificador = ?', [corpo.identificador]);
+  assert.equal(linhas.length, 1, 'a corrida gravou duas linhas!');
+  const vencedora = [a, b].find((r) => r.status === 201);
+  assert.equal(vencedora.json.definicao.sistema, 'SAC');
 });
 
 // ---------- T-13: registro no FinOps ----------
 await cenario('POST /:id/finops em operação SIMULADA → 422; inexistente → 404; id inválido → 400', async () => {
-  const simulada = await chama('GET', `/operacoes/por-identificador/${ident(6)}/consolidado`);
-  assert.equal(simulada.status, 422); // confirma que a CREDITO_PESSOAL continua SIMULADA
-  const idSimulada = Number(simulada.json.erro.mensagem.match(/Operação (\d+)/)[1]);
-  const a = await chama('POST', `/operacoes/${idSimulada}/finops`);
+  const a = await chama('POST', `/operacoes/${idSimuladaIntacta}/finops`);
   assert.equal(a.status, 422, JSON.stringify(a.json));
   assert.equal(a.json.erro.codigo, 'OPERACAO_NAO_DEFINIDA');
   assert.equal((await chama('POST', '/operacoes/99999999/finops')).status, 404);
@@ -650,7 +820,7 @@ await cenario('GET /:id/consolidado (PF, PRICE) → documento só do sistema esc
   ]);
   assert.deepEqual(consolidado.operacao, {
     id: criada.id, identificador: criada.identificador, estado: 'DEFINIDA',
-    criadoEm: criada.criadoEm, definidoEm: definida.definicao.definidoEm,
+    criadoEm: criada.criadoEm, definidoEm: criada.definicao.definidoEm, // definida no próprio POST
   });
   assert.deepEqual(consolidado.cliente, { tipoPessoa: 'PF', documento: '52998224725' });
   assert.deepEqual(consolidado.produto, {
@@ -707,21 +877,31 @@ await cenario('GET /por-identificador/NAO-EXISTE/consolidado → 404; de operaç
   const a = await chama('GET', '/operacoes/por-identificador/NAO-EXISTE/consolidado');
   assert.equal(a.status, 404);
   assert.equal(a.json.erro.codigo, 'OPERACAO_NAO_ENCONTRADA');
-  const b = await chama('GET', `/operacoes/por-identificador/${encodeURIComponent(ident(6))}/consolidado`);
+  const b = await chama('GET', `/operacoes/por-identificador/${encodeURIComponent(IDENT_SIMULADA_INTACTA)}/consolidado`);
   assert.equal(b.status, 422);
   assert.equal(b.json.erro.codigo, 'OPERACAO_NAO_DEFINIDA');
   const c = await chama('GET', '/operacoes/abc/consolidado');
   assert.equal(c.status, 400);
 });
 
-await cenario('GET /:id depois da definição → simulacoes idênticas às de antes (coluna resultado nunca muda)', async () => {
+await cenario('GET /:id depois de consultar o consolidado → resposta idêntica à do POST (resultado nunca muda)', async () => {
   const r = await chama('GET', `/operacoes/${criada.id}`);
   assert.equal(r.status, 200);
   assert.equal(r.json.estado, 'DEFINIDA');
   assert.deepEqual(r.json.simulacoes.PRICE.cronograma, criada.simulacoes.PRICE.cronograma);
   assert.deepEqual(r.json.simulacoes, criada.simulacoes);
+  assert.deepEqual(r.json.definicao, criada.definicao);
+  assert.deepEqual(r.json.finops, criada.finops);
+  assert.deepEqual(r.json, criada); // nada mudou desde o 201
+});
+
+await cenario('GET /:id da SIMULADA legado que foi definida → simulacoes intactas e definicao preenchida', async () => {
+  const r = await chama('GET', `/operacoes/${idSimuladaLegado}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.json.estado, 'DEFINIDA');
   assert.deepEqual(r.json.definicao, definida.definicao);
   assert.deepEqual(r.json.finops, definida.finops);
+  assert.deepEqual(r.json.simulacoes, criada.simulacoes); // é cópia da A.5
 });
 
 // ---------- T-12: listagem com estado ----------
@@ -735,7 +915,9 @@ await cenario('GET /?estado=DEFINIDA → só definidas (PF e PJ), total respeita
   const itemPj = r.json.itens.find((i) => i.id === pj.id);
   assert.equal(itemPj.definicao.sistema, 'SAC');
   assert.deepEqual(itemPj.cliente, { tipoPessoa: 'PJ', documento: '11222333000181' });
-  assert.equal(itemPj.finops.status, statusFinopsEsperado); // a listagem também mostra o registro no FinOps
+  // A listagem também mostra o registro no FinOps. Operação criada pelo POST (T-14) nasce
+  // PENDENTE: quem muda esse status é a rota de registro no FinOps, não o POST.
+  assert.equal(itemPj.finops.status, 'PENDENTE');
   return `definidas=${r.json.total}`;
 });
 

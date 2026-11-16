@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { validaEntrada } from './validaEntrada.js';
 import { repositorioModalidadesFalso } from './bancoFalso.js';
 
-// Corpo do contrato da T-07 (cenário ponta a ponta, Anexo A.5) + cliente PF de teste (T-09).
+// Corpo do contrato da T-07 (cenário ponta a ponta, Anexo A.5) + cliente PF de teste (T-09)
+// + `amortizacao`, obrigatória desde a T-14 (vem do grupo de decisão).
 function corpoValido(sobrescreve = {}) {
   return {
     identificador: 'OP-2026-0001',
@@ -14,6 +15,7 @@ function corpoValido(sobrescreve = {}) {
     score: 650,
     prazoMeses: 12,
     dataLiberacao: '2026-10-30',
+    amortizacao: 'PRICE',
     ...sobrescreve,
   };
 }
@@ -53,7 +55,7 @@ test('validaEntrada: sem dataLiberacao usa a data de hoje (AAAA-MM-DD)', async (
   assert.equal(Number(e.dataLiberacao.slice(0, 4)), new Date().getFullYear());
 });
 
-test('validaEntrada: corpo {} lança 400 DADOS_INVALIDOS com 6 mensagens e não consulta o banco', async () => {
+test('validaEntrada: corpo {} lança 400 DADOS_INVALIDOS com 7 mensagens e não consulta o banco', async () => {
   const repositorioQueNaoPodeSerChamado = {
     buscarModalidade: async () => { throw new Error('não deveria consultar o banco sem modalidade'); },
   };
@@ -61,19 +63,19 @@ test('validaEntrada: corpo {} lança 400 DADOS_INVALIDOS com 6 mensagens e não 
 
   assert.equal(erro.status, 400);
   assert.equal(erro.codigo, 'DADOS_INVALIDOS');
-  assert.equal(erro.detalhes.length, 6);
+  assert.equal(erro.detalhes.length, 7); // 6 campos da T-07/T-09 + amortizacao (T-14)
 
   const texto = erro.detalhes.join(' | ');
-  for (const campo of ['identificador', 'cliente', 'valor', 'modalidade', 'score', 'prazoMeses']) {
+  for (const campo of ['identificador', 'cliente', 'valor', 'modalidade', 'score', 'prazoMeses', 'amortizacao']) {
     assert.ok(texto.includes(campo), `detalhes deveria citar "${campo}": ${texto}`);
   }
 });
 
-test('validaEntrada: corpo undefined (requisição sem JSON) também dá 400 com 6 mensagens', async () => {
+test('validaEntrada: corpo undefined (requisição sem JSON) também dá 400 com 7 mensagens', async () => {
   const erro = await capturaErro(undefined);
 
   assert.equal(erro.status, 400);
-  assert.equal(erro.detalhes.length, 6);
+  assert.equal(erro.detalhes.length, 7);
 });
 
 // ---------- cliente (T-09) ----------
@@ -154,9 +156,10 @@ test('validaEntrada: acumula TODOS os problemas, não só o primeiro', async () 
     prazoMeses: 6, // VEICULOS exige 12 a 60
     dataLiberacao: '2026-02-30',
     primeiroRelacionamento: 'sim',
+    // amortizacao ausente de propósito: entra como oitava mensagem
   });
 
-  assert.equal(erro.detalhes.length, 7);
+  assert.equal(erro.detalhes.length, 8);
 });
 
 test('validaEntrada: limites de valor (0, negativo, > 10 milhões, string)', async () => {
@@ -212,4 +215,98 @@ test('validaEntrada: primeiroRelacionamento true é preservado; null conta como 
   assert.equal((await valida(corpoValido({ primeiroRelacionamento: true }))).primeiroRelacionamento, true);
   assert.equal((await valida(corpoValido({ primeiroRelacionamento: null }))).primeiroRelacionamento, false);
   assert.match((await capturaErro(corpoValido({ primeiroRelacionamento: 1 }))).detalhes[0], /primeiroRelacionamento/);
+});
+
+// ---------- campos do grupo de decisão (T-14) ----------
+test('validaEntrada: amortizacao é obrigatória e aceita só PRICE ou SAC (espaços e minúsculas toleradas)', async () => {
+  assert.equal((await valida(corpoValido({ amortizacao: 'SAC' }))).amortizacao, 'SAC');
+  assert.equal((await valida(corpoValido({ amortizacao: 'PRICE' }))).amortizacao, 'PRICE');
+  assert.equal((await valida(corpoValido({ amortizacao: '  sac  ' }))).amortizacao, 'SAC');
+
+  for (const amortizacao of [undefined, null, '', 'LINEAR', 'price ou sac', 123, ['SAC'], { sistema: 'SAC' }]) {
+    const erro = await capturaErro(corpoValido({ amortizacao }));
+    assert.equal(erro.status, 400, `amortizacao ${JSON.stringify(amortizacao)}`);
+    assert.equal(erro.detalhes.length, 1, `amortizacao ${JSON.stringify(amortizacao)}`);
+    assert.equal(erro.detalhes[0], 'amortizacao é obrigatória e deve ser PRICE ou SAC');
+  }
+});
+
+test('validaEntrada: decisao é normalizada para maiúscula; ausente vira null; texto vazio é 400', async () => {
+  assert.equal((await valida(corpoValido({ decisao: 'APROVADO' }))).decisao, 'APROVADO');
+  assert.equal((await valida(corpoValido({ decisao: ' aprovado ' }))).decisao, 'APROVADO');
+  // O valor em si não é julgado aqui: REPROVADO passa pela validação e cai no 422 da rota.
+  assert.equal((await valida(corpoValido({ decisao: 'REPROVADO' }))).decisao, 'REPROVADO');
+  assert.equal((await valida(corpoValido())).decisao, null); // campo não enviado
+  assert.equal((await valida(corpoValido({ decisao: null }))).decisao, null);
+
+  for (const decisao of ['', '   ', 42, {}, []]) {
+    const erro = await capturaErro(corpoValido({ decisao }));
+    assert.equal(erro.detalhes.length, 1, `decisao ${JSON.stringify(decisao)}`);
+    assert.match(erro.detalhes[0], /^decisao deve ser um texto não vazio/);
+  }
+});
+
+test('validaEntrada: probabilidadeDefault é número entre 0 e 1 (0 e 1 valem); ausente vira null', async () => {
+  assert.equal((await valida(corpoValido({ probabilidadeDefault: 0.0128 }))).probabilidadeDefault, 0.0128);
+  assert.equal((await valida(corpoValido({ probabilidadeDefault: 0 }))).probabilidadeDefault, 0);
+  assert.equal((await valida(corpoValido({ probabilidadeDefault: 1 }))).probabilidadeDefault, 1);
+  assert.equal((await valida(corpoValido())).probabilidadeDefault, null);
+
+  for (const p of [-0.1, 1.01, 12.8, '0.0128', NaN, Infinity]) {
+    const erro = await capturaErro(corpoValido({ probabilidadeDefault: p }));
+    assert.equal(erro.detalhes.length, 1, `probabilidadeDefault ${p}`);
+    assert.equal(erro.detalhes[0], 'probabilidadeDefault deve ser um número entre 0 e 1');
+  }
+});
+
+test('validaEntrada: contextoScore é guardado como veio (objeto); ausente vira null', async () => {
+  const contextoScore = {
+    scoreFinal: 872,
+    faixaRisco: 'EXCELENTE', // escala do grupo de decisão, NÃO a nossa faixa A/B/C/D
+    probabilidadeDefault: 0.0128,
+    modelo: 'SCORE_PF v1.1.0',
+    motivo: 'Score 872 atende ao mínimo para aprovação automática.',
+  };
+  const e = await valida(corpoValido({ contextoScore }));
+  assert.deepEqual(e.contextoScore, contextoScore); // nada é recalculado nem descartado
+
+  assert.equal((await valida(corpoValido())).contextoScore, null);
+
+  for (const c of ['texto', 42, [1, 2]]) {
+    const erro = await capturaErro(corpoValido({ contextoScore: c }));
+    assert.equal(erro.detalhes.length, 1, `contextoScore ${JSON.stringify(c)}`);
+    assert.equal(erro.detalhes[0], 'contextoScore deve ser um objeto');
+  }
+});
+
+test('validaEntrada: o payload real do grupo de decisão passa inteiro (T-14)', async () => {
+  const e = await valida({
+    identificador: 'OP-2026-000123',
+    cliente: { tipoPessoa: 'PF', documento: '12345678909' },
+    decisao: 'APROVADO',
+    valor: 10000,
+    modalidade: 'CREDITO_PESSOAL',
+    score: 872,
+    probabilidadeDefault: 0.0128,
+    prazoMeses: 24,
+    dataLiberacao: '2026-11-14',
+    primeiroRelacionamento: false,
+    amortizacao: 'SAC',
+    contextoScore: {
+      scoreFinal: 872,
+      faixaRisco: 'EXCELENTE',
+      probabilidadeDefault: 0.0128,
+      modelo: 'SCORE_PF v1.1.0',
+      motivo: 'Score 872 atende ao mínimo para aprovação automática.',
+    },
+  });
+
+  assert.equal(e.identificador, 'OP-2026-000123'); // 6 dígitos na sequência: o regex aceita \d{4,}
+  assert.equal(e.amortizacao, 'SAC');
+  assert.equal(e.decisao, 'APROVADO');
+  assert.equal(e.probabilidadeDefault, 0.0128);
+  assert.equal(e.contextoScore.modelo, 'SCORE_PF v1.1.0');
+  assert.equal(e.modalidade.codigo, 'CREDITO_PESSOAL');
+  assert.equal(e.prazoMeses, 24);
+  assert.equal(e.primeiroRelacionamento, false);
 });
